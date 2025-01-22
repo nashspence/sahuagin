@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+clap = { version = "*", features = ["derive"] }
 sqlx = { version = "*", features = ["mysql", "runtime-tokio", "macros"] }
 tokio = { version = "*", features = ["full"] }
