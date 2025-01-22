@@ -45,7 +45,6 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
 
 # Verify Rust installation
 RUN . $HOME/.cargo/env && rustc --version && cargo --version
-RUN rustup component add rust-src rust-analyzer
 
 COPY poststart.sh /usr/local/bin/poststart.sh
 RUN chmod +x /usr/local/bin/poststart.sh
