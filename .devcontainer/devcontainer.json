@@ -8,12 +8,12 @@
 		"vscode": {
 			"extensions": [
 				"ms-azuretools.vscode-docker",
-				"ms-python.black-formatter",
-				"KevinRose.vsc-python-indent",
-				"ms-python.vscode-pylance",
-				"ms-python.python",
-				"ms-python.debugpy",
-				"github.vscode-github-actions"
+				"github.vscode-github-actions",
+				"donjayamanne.githistory",
+				"rust-lang.rust-analyzer",
+				"fill-labs.dependi",
+				"dustypomerleau.rust-syntax",
+				"jinxdash.prettier-rust"
 			]
 		}
 	}
