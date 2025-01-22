@@ -5,3 +5,4 @@ if [ -d /tmp/.ssh ]; then
   chmod 700 /root/.ssh
   chmod 600 /root/.ssh/*
 fi
+/root/.cargo/bin/cargo build

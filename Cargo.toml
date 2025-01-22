@@ -1,0 +1,8 @@
+[package]
+name = "sahuagin"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sqlx = { version = "*", features = ["mysql", "runtime-tokio", "macros"] }
+tokio = { version = "*", features = ["full"] }

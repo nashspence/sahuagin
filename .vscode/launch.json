@@ -2,19 +2,18 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python Debugger: Remote Attach",
-            "type": "debugpy",
+            "name": "Attach to LLDB Server",
+            "type": "lldb",
             "request": "attach",
-            "connect": {
-                "host": "localhost",
-                "port": 5678
-            },
-            "pathMappings": [
-                {
-                    "localRoot": "${workspaceFolder}/packages/home_index_caption",
-                    "remoteRoot": "/app"
-                }
+            "initCommands": [
+                "platform select remote-linux",
+                "platform connect connect://localhost:9229",
+                "platform settings -w /app",
+                "process launch -- /usr/local/bin/wasmtime --debug /app/your_module.wasm"
             ],
+            "sourceMap": {
+                "/app": "${workspaceFolder}"
+            },
             "preLaunchTask": "Restart Docker Container",
             "postDebugTask": "Stop Docker Compose"
         }

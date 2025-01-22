@@ -13,7 +13,9 @@
 				"rust-lang.rust-analyzer",
 				"fill-labs.dependi",
 				"dustypomerleau.rust-syntax",
-				"jinxdash.prettier-rust"
+				"jinxdash.prettier-rust",
+				"vadimcn.vscode-lldb",
+				"ms-vscode.wasm-dwarf-debugging"
 			]
 		}
 	}

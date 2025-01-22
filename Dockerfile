@@ -9,36 +9,32 @@ RUN rustup target add wasm32-unknown-unknown && \
 WORKDIR /app
 COPY . .
 
-# Build the project to WebAssembly and optimize the WASM binary
-RUN wasm-pack build --target web && \
+# Build the project to WebAssembly with debug symbols
+RUN wasm-pack build --target web --dev && \
     mkdir -p /output && \
     cp pkg/*.wasm /output/
-
-# Optimize the WebAssembly binary using binaryen
-RUN apt-get update && apt-get install -y binaryen && \
-    wasm-opt -O3 /output/*.wasm -o /output/optimized.wasm
 
 # Runtime image
 FROM debian:bullseye-slim as runtime
 
 # Install WebAssembly runtime tools
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    wget \
-    socat && \
-    curl -LO https://github.com/bytecodealliance/wasmtime/releases/download/v7.0.0/wasmtime-v7.0.0-x86_64-linux.tar.xz && \
-    tar -xJf wasmtime-v7.0.0-x86_64-linux.tar.xz -C /usr/local/bin --strip-components=1 && \
-    rm wasmtime-v7.0.0-x86_64-linux.tar.xz
+    tar \
+    lldb-server && \
+    WASMTIME_VERSION=$(curl -s https://api.github.com/repos/bytecodealliance/wasmtime/releases/latest | grep "tag_name" | cut -d '"' -f 4) && \
+    curl -LO https://github.com/bytecodealliance/wasmtime/releases/download/$WASMTIME_VERSION/wasmtime-$WASMTIME_VERSION-x86_64-linux.tar.xz && \
+    tar -xJf wasmtime-$WASMTIME_VERSION-x86_64-linux.tar.xz -C /usr/local/bin --strip-components=1 && \
+    rm wasmtime-$WASMTIME_VERSION-x86_64-linux.tar.xz && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Expose port for remote debugging
 EXPOSE 9229
 
-# Copy optimized WASM from the builder stage
-COPY --from=builder /output/optimized.wasm /app/optimized.wasm
+# Copy debug-enabled WASM and source maps from the builder stage
+COPY --from=builder /app/pkg/*.wasm /app/
+COPY --from=builder /app/pkg/*.d.ts /app/
+COPY --from=builder /app/pkg/*.js /app/
 
-# Set up remote debugging with Wasmtime
-RUN apt-get install -y procps && \
-    echo "alias debug-wasm='wasmtime run --debug /app/optimized.wasm'" >> /root/.bashrc
-
-# Default command for debugging
-CMD ["socat", "tcp-listen:9229,fork", "exec:/usr/local/bin/wasmtime --debug /app/optimized.wasm"]
+# Command to start lldb-server
+CMD ["lldb-server", "platform", "--listen", "*:9229", "--server"]
