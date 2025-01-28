@@ -2,12 +2,12 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Restart Docker Container",
+            "label": "Start Docker Compose",
             "type": "shell",
             "command": "bash",
             "args": [
                 "-c",
-                "docker-compose down && docker-compose build && DEBUG=True docker-compose up -d && sleep 10"
+                "docker-compose down && docker-compose build && DEBUG=True docker-compose up -d && sleep 5"
             ],
             "problemMatcher": []
         },
@@ -18,6 +18,33 @@
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always"
+            }
+        },
+        {
+            "label": "Cargo Build",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "build"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "Pre-launch Tasks",
+            "dependsOn": [
+                "Cargo Build",
+                "Start Docker Compose"
+            ],
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
             }
         }
     ]

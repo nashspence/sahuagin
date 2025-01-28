@@ -2,20 +2,16 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Attach to LLDB Server",
             "type": "lldb",
-            "request": "attach",
-            "initCommands": [
-                "platform select remote-linux",
-                "platform connect connect://localhost:9229",
-                "platform settings -w /app",
-                "process launch -- /usr/local/bin/wasmtime --debug /app/your_module.wasm"
+            "request": "launch",
+            "name": "Build and Debug Rust App",
+            "program": "${workspaceFolder}/target/debug/sahuagin",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "sourceLanguages": [
+                "rust"
             ],
-            "sourceMap": {
-                "/app": "${workspaceFolder}"
-            },
-            "preLaunchTask": "Restart Docker Container",
-            "postDebugTask": "Stop Docker Compose"
+            "preLaunchTask": "Pre-launch Tasks"
         }
     ]
 }

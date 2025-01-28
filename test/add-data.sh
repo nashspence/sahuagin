@@ -1,0 +1,4 @@
+sahuagin() {
+    target/debug/sahuagin "$@"
+}
+
