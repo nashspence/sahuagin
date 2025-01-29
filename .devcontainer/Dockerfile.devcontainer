@@ -46,6 +46,11 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
 # Verify Rust installation
 RUN . $HOME/.cargo/env && rustc --version && cargo --version
 
+# Update and install LLDB
+RUN apt-get install -y lldb \
+    pkg-config \
+    libssl-dev
+
 COPY poststart.sh /usr/local/bin/poststart.sh
 RUN chmod +x /usr/local/bin/poststart.sh
 

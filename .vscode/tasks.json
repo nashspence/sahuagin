@@ -7,7 +7,7 @@
             "command": "bash",
             "args": [
                 "-c",
-                "docker-compose down && docker-compose build && DEBUG=True docker-compose up -d && sleep 5"
+                "docker-compose down && docker-compose build && DEBUG=True docker-compose up -d && sleep 2"
             ],
             "problemMatcher": []
         },
@@ -18,34 +18,8 @@
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always"
-            }
-        },
-        {
-            "label": "Cargo Build",
-            "type": "shell",
-            "command": "cargo",
-            "args": [
-                "build"
-            ],
-            "group": {
-                "kind": "build",
-                "isDefault": true
             },
-            "problemMatcher": [
-                "$rustc"
-            ]
+            "dependsOn": "Run Cleanup"
         },
-        {
-            "label": "Pre-launch Tasks",
-            "dependsOn": [
-                "Cargo Build",
-                "Start Docker Compose"
-            ],
-            "problemMatcher": [],
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            }
-        }
     ]
 }

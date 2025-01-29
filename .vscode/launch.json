@@ -4,14 +4,22 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Build and Debug Rust App",
+            "name": "Debug Rust",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--manifest-path",
+                    "${workspaceFolder}/Cargo.toml"
+                ]
+            },
             "program": "${workspaceFolder}/target/debug/sahuagin",
             "args": [],
             "cwd": "${workspaceFolder}",
             "sourceLanguages": [
                 "rust"
             ],
-            "preLaunchTask": "Pre-launch Tasks"
+            "preLaunchTask": "Start Docker Compose",
+            "postDebugTask": "Stop Docker Compose"
         }
     ]
 }
