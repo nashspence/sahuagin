@@ -5,8 +5,8 @@ services:
       - DOLT_ROOT_HOST=%
       - DOLT_ROOT_PASSWORD=test
       - TZ=America/Los_Angeles
-    expose:
-      - "3306"
+    ports:
+      - "3306:3306"
     image: dolthub/dolt-sql-server:latest
     restart: unless-stopped
     volumes:

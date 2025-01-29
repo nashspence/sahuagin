@@ -20,10 +20,14 @@ struct ApiDoc;
 
 #[tokio::main]
 async fn main() -> Result<(), sqlx::Error> {
-    // Connect to Dolt:
-    let pool = MySqlPool::connect("mysql://root:test@dolt:3306").await?;
+    let pool = MySqlPool::connect("mysql://root:test@localhost:3306").await?;
 
-    // Inline DB init (optional - remove if your table is already set up)
+    sqlx::query("CREATE DATABASE IF NOT EXISTS sahuagin;")
+        .execute(&pool)
+        .await?;
+
+    let pool = MySqlPool::connect("mysql://root:test@localhost:3306/sahuagin").await?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS items (

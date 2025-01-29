@@ -7,7 +7,7 @@
             "command": "bash",
             "args": [
                 "-c",
-                "docker-compose down && docker-compose build && DEBUG=True docker-compose up -d && sleep 2"
+                "docker-compose down && docker-compose build && DEBUG=True docker-compose up -d && sleep 5"
             ],
             "problemMatcher": []
         },
@@ -18,8 +18,7 @@
             "problemMatcher": [],
             "presentation": {
                 "reveal": "always"
-            },
-            "dependsOn": "Run Cleanup"
+            }
         },
     ]
 }
