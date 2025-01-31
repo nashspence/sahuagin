@@ -1,0 +1,5 @@
+[sqlfluff]
+dialect = mariadb
+templater = jinja
+format = json
+large_file_skip_byte_limit = 0
