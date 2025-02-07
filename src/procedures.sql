@@ -1,530 +1,231 @@
-CREATE TABLE `attribute` (
-    `id` INT UNSIGNED AUTO_INCREMENT,
-    `name` VARCHAR(255) NOT NULL,
-    `type` ENUM('discrete', 'continuous') NOT NULL,
-    `decimals` INT NULL,
-    `has_labels` BOOLEAN NULL,
-    `has_value` BOOLEAN NULL,
-    `max_value` DOUBLE NULL,
-    `min_value` DOUBLE NULL,
-    `normal_value` DOUBLE NULL,
-    `percent_normal` DOUBLE NULL,
-    `percent_skewed` DOUBLE NULL,
-    `units` VARCHAR(255) NULL,
-    PRIMARY KEY (`id`),
-    CHECK (
-        max_value IS NULL
-        OR min_value IS NULL
-        OR max_value >= min_value
-    ),
-    CHECK (
-        (
-            type = 'discrete'
-            AND decimals IS NULL
-            AND has_labels IS NULL
-            AND has_value IS NULL
-            AND max_value IS NULL
-            AND min_value IS NULL
-            AND normal_value IS NULL
-            AND percent_normal IS NULL
-            AND percent_skewed IS NULL
-            AND units IS NULL
-        )
-        OR (
-            type = 'continuous'
-            AND decimals IS NOT NULL
-            AND has_labels IS NOT NULL
-            AND has_value IS NOT NULL
-            AND max_value IS NOT NULL
-            AND min_value IS NOT NULL
-            AND normal_value IS NOT NULL
-            AND percent_normal IS NOT NULL
-            AND percent_skewed IS NOT NULL
-        )
-    )
-);
-CREATE TABLE `span` (
-    `id` INT UNSIGNED AUTO_INCREMENT,
-    `attribute_id` INT UNSIGNED NOT NULL,
-    `label` VARCHAR(255) NOT NULL,
-    `type` ENUM('discrete', 'continuous') NOT NULL,
-    `is_percentage_pinned` BOOLEAN NULL,
-    `weight` INT NULL,
-    `max_value` DOUBLE NULL,
-    `min_value` DOUBLE NULL,
-    PRIMARY KEY (`id`),
-    CONSTRAINT `fk_spans_attr` FOREIGN KEY (`attribute_id`) REFERENCES `attribute` (`id`) ON DELETE CASCADE,
-    CHECK (
-        max_value IS NULL
-        OR min_value IS NULL
-        OR max_value >= min_value
-    ),
-    CHECK (
-        (
-            type = 'discrete'
-            AND is_percentage_pinned IS NOT NULL
-            AND weight IS NOT NULL
-            AND max_value IS NULL
-            AND min_value IS NULL
-        )
-        OR (
-            type = 'continuous'
-            AND is_percentage_pinned IS NULL
-            AND weight IS NULL
-            AND max_value IS NOT NULL
-            AND min_value IS NOT NULL
-        )
-    )
-);
-CREATE TABLE `variant` (
-    `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    `name` VARCHAR(255) NOT NULL
-);
-CREATE TABLE `variant_attribute` (
-    `id` INT UNSIGNED AUTO_INCREMENT,
-    `attribute_id` INT UNSIGNED NOT NULL,
-    `name` VARCHAR(255) NOT NULL,
-    `causation_index` INT NOT NULL,
-    `variant_id` INT UNSIGNED NOT NULL,
-    PRIMARY KEY (`id`),
-    CONSTRAINT `fk_variant_attr_attr` FOREIGN KEY (`attribute_id`) REFERENCES `attribute` (`id`) ON DELETE CASCADE,
-    CONSTRAINT `fk_variant_attr_variant` FOREIGN KEY (`variant_id`) REFERENCES `variant` (`id`) ON DELETE CASCADE
-);
-CREATE TABLE `variant_attr_span` (
-    `id` INT UNSIGNED AUTO_INCREMENT,
-    `span_id` INT UNSIGNED NOT NULL,
-    `variant_attribute_id` INT UNSIGNED NOT NULL,
-    `variant_id` INT UNSIGNED NOT NULL,
-    PRIMARY KEY (`id`),
-    CONSTRAINT `fk_varattr_span_span` FOREIGN KEY (`span_id`) REFERENCES `span` (`id`) ON DELETE CASCADE,
-    CONSTRAINT `fk_varattr_span_varattr` FOREIGN KEY (`variant_attribute_id`) REFERENCES `variant_attribute` (`id`) ON DELETE CASCADE,
-    CONSTRAINT `fk_varattr_span_variant` FOREIGN KEY (`variant_id`) REFERENCES `variant` (`id`) ON DELETE CASCADE
-); -- short for variant_attribute_variant_span
-CREATE TABLE `vavspan_attr` (
-    `id` INT UNSIGNED AUTO_INCREMENT,
-    `variant_attribute_id` INT UNSIGNED NOT NULL,
-    `variant_attr_span_id` INT UNSIGNED,
-    PRIMARY KEY (`id`),
-    CONSTRAINT `fk_vavspan_attr_va` FOREIGN KEY (`variant_attribute_id`) REFERENCES `variant_attribute` (`id`) ON DELETE CASCADE,
-    CONSTRAINT `fk_vavspan_attr_vas` FOREIGN KEY (`variant_attr_span_id`) REFERENCES `variant_attr_span` (`id`) ON DELETE CASCADE
-); -- short for variant_attribute_variant_span_variant_attribute
-CREATE TABLE `variation` (
-    `id` INT UNSIGNED AUTO_INCREMENT,
-    `activating_span_id` INT UNSIGNED NOT NULL,
-    `to_modify_vavspan_attr_id` INT UNSIGNED NOT NULL,
-    `activating_vavspan_attr_id` INT UNSIGNED NOT NULL,
-    `is_inactive` BOOLEAN NOT NULL DEFAULT 0,
-    PRIMARY KEY (`id`),
-    CONSTRAINT `fk_variation_span` FOREIGN KEY (`activating_span_id`) REFERENCES `span` (`id`) ON DELETE CASCADE,
-    CONSTRAINT `fk_variation_vavspan_to_modify` FOREIGN KEY (`to_modify_vavspan_attr_id`) REFERENCES `vavspan_attr` (`id`) ON DELETE CASCADE,
-    CONSTRAINT `fk_variation_vavspan_activating` FOREIGN KEY (`activating_vavspan_attr_id`) REFERENCES `vavspan_attr` (`id`) ON DELETE CASCADE
-);
-CREATE TABLE `variation_continuous_attr` (
-    `id` INT UNSIGNED AUTO_INCREMENT,
-    `variation_id` INT UNSIGNED NOT NULL,
-    `delta_normal` DOUBLE NOT NULL,
-    `delta_percent_normal` DOUBLE NOT NULL,
-    `delta_percent_skewed` DOUBLE NOT NULL,
-    PRIMARY KEY (`id`),
-    CONSTRAINT `fk_var_continuous_attr_var` FOREIGN KEY (`variation_id`) REFERENCES `variation` (`id`) ON DELETE CASCADE
-); -- short for variation_on_continuous_attribute
-CREATE TABLE `variation_activated_span` (
-    `id` INT UNSIGNED AUTO_INCREMENT,
-    `span_id` INT UNSIGNED NOT NULL,
-    `variation_id` INT UNSIGNED NOT NULL,
-    PRIMARY KEY (`id`),
-    CONSTRAINT `fk_var_activated_span_span` FOREIGN KEY (`span_id`) REFERENCES `span` (`id`) ON DELETE CASCADE,
-    CONSTRAINT `fk_var_activated_span_var` FOREIGN KEY (`variation_id`) REFERENCES `variation` (`id`) ON DELETE CASCADE
-);
-CREATE TABLE `variation_delta_weight` (
-    `id` INT UNSIGNED AUTO_INCREMENT,
-    `delta_weight` DOUBLE NOT NULL,
-    `span_id` INT UNSIGNED NOT NULL,
-    `variation_id` INT UNSIGNED NOT NULL,
-    PRIMARY KEY (`id`),
-    CONSTRAINT `fk_var_delta_weight_span` FOREIGN KEY (`span_id`) REFERENCES `span` (`id`) ON DELETE CASCADE,
-    CONSTRAINT `fk_var_delta_weight_var` FOREIGN KEY (`variation_id`) REFERENCES `variation` (`id`) ON DELETE CASCADE
-);
-CREATE TABLE `variation_inactive_span` (
-    `id` INT UNSIGNED AUTO_INCREMENT,
-    `span_id` INT UNSIGNED NOT NULL,
-    `variation_id` INT UNSIGNED NOT NULL,
-    PRIMARY KEY (`id`),
-    CONSTRAINT `fk_var_inactive_span_span` FOREIGN KEY (`span_id`) REFERENCES `span` (`id`) ON DELETE CASCADE,
-    CONSTRAINT `fk_var_inactive_span_var` FOREIGN KEY (`variation_id`) REFERENCES `variation` (`id`) ON DELETE CASCADE
-);
-CREATE TABLE `entity` (
-    `id` INT UNSIGNED AUTO_INCREMENT,
-    `variant_id` INT UNSIGNED NOT NULL,
-    `commit_hash` CHAR(32) NOT NULL,
-    PRIMARY KEY (`id`),
-    CONSTRAINT `fk_entity_variant` FOREIGN KEY (`variant_id`) REFERENCES `variant` (`id`) ON DELETE CASCADE
-);
-CREATE TABLE `entity_state` (
-    `id` INT UNSIGNED AUTO_INCREMENT,
-    `entity_id` INT UNSIGNED NOT NULL,
-    `time` DOUBLE NOT NULL UNIQUE,
-    PRIMARY KEY (`id`),
-    CONSTRAINT `fk_entity` FOREIGN KEY (`entity_id`) REFERENCES `entity` (`id`) ON DELETE CASCADE
-);
-CREATE TABLE `entity_varattr_value` (
-    `id` INT UNSIGNED AUTO_INCREMENT,
-    `entity_state_id` INT UNSIGNED NOT NULL,
-    `numeric_value` DOUBLE,
-    `span_id` INT UNSIGNED,
-    `variant_attribute_id` INT UNSIGNED NOT NULL,
-    PRIMARY KEY (`id`),
-    CONSTRAINT `fk_evav_entity_state` FOREIGN KEY (`entity_state_id`) REFERENCES `entity_state` (`id`) ON DELETE CASCADE,
-    CONSTRAINT `fk_evav_span` FOREIGN KEY (`span_id`) REFERENCES `span` (`id`) ON DELETE CASCADE,
-    CONSTRAINT `fk_evav_variant_attr` FOREIGN KEY (`variant_attribute_id`) REFERENCES `variant_attribute` (`id`) ON DELETE CASCADE
-); -- short for entity_variant_attribute_value
-CREATE TABLE `evav_lock` (
-    `id` INT UNSIGNED AUTO_INCREMENT,
-    `locked_evav_id` INT UNSIGNED NOT NULL,
-    `locking_evav_id` INT UNSIGNED,
-    PRIMARY KEY (`id`),
-    CONSTRAINT `fk_evav_lock_locked_evav` FOREIGN KEY (`locked_evav_id`) REFERENCES `entity_varattr_value` (`id`) ON DELETE CASCADE,
-    CONSTRAINT `fk_evav_lock_locking_evav` FOREIGN KEY (`locking_evav_id`) REFERENCES `entity_varattr_value` (`id`) ON DELETE CASCADE
-); -- short for entity_variant_attribute_value_lock
-
-
-
-
-CREATE INDEX idx_attribute_name ON attribute(name);
-
-CREATE INDEX idx_span_attribute_id ON span(attribute_id);
-CREATE INDEX idx_span_attribute_type ON span(attribute_id, type, id);
-CREATE INDEX idx_span_attr_type ON span(attribute_id, type, min_value, max_value);
-CREATE INDEX idx_span_attr_type_pinned ON span(attribute_id, type, is_percentage_pinned);
-CREATE INDEX idx_span_attr_type_pinned_wl ON span(attribute_id, type, is_percentage_pinned, weight, label);
-
-CREATE INDEX idx_variant_name ON variant(name);
-
-CREATE INDEX idx_variant_attribute_attribute ON variant_attribute(attribute_id);
-CREATE INDEX idx_variant_attribute_variant ON variant_attribute(variant_id);
-CREATE INDEX idx_variant_attribute_variant_causation ON variant_attribute(variant_id, causation_index);
-
-CREATE INDEX idx_variant_attr_span_span_id ON variant_attr_span(span_id);
-CREATE INDEX idx_variant_attr_span_variant_attribute_id ON variant_attr_span(variant_attribute_id);
-CREATE INDEX idx_variant_attr_span_variant_attr ON variant_attr_span(variant_id, variant_attribute_id);
-CREATE INDEX idx_variant_attr_span_vaid_spanid ON variant_attr_span(variant_attribute_id, span_id);
-CREATE INDEX idx_variant_attr_span_vaid_variant ON variant_attr_span(variant_attribute_id, variant_id);
-
-CREATE INDEX idx_vavspan_attr_variant_attribute ON vavspan_attr(variant_attribute_id);
-CREATE INDEX idx_vavspan_attr_vaid ON vavspan_attr(variant_attribute_id, id);
-CREATE INDEX idx_uq_vavspan_attr ON vavspan_attr(variant_attribute_id, variant_attr_span_id);
-
-CREATE INDEX idx_var_cont_variation ON variation_continuous_attr(variation_id);
-
-CREATE INDEX idx_variation_activated_span_varid_spanid ON variation_activated_span(variation_id, span_id);
-
-CREATE INDEX idx_variation_inactive ON variation_inactive_span(variation_id, span_id);
-
-CREATE INDEX idx_variation_delta_weight_varid_spanid ON variation_delta_weight(variation_id, span_id);
-CREATE INDEX idx_variation_delta ON variation_delta_weight(variation_id, span_id, delta_weight);
-
-CREATE INDEX idx_variation_is_inactive ON variation(is_inactive, id);
-CREATE INDEX idx_variation_to_modify_inactive ON variation(to_modify_vavspan_attr_id, is_inactive);
-
-CREATE INDEX idx_entity_commithash ON entity(commit_hash);
-
-CREATE INDEX idx_entity_state_entity_id ON entity_state(entity_id);
-CREATE INDEX idx_entity_state_entity_time ON entity_state(entity_id, time);
-
-CREATE INDEX idx_entity_varattr_value_entity_state_id ON entity_varattr_value(entity_state_id);
-CREATE INDEX idx_evav_state_vaid ON entity_varattr_value(entity_state_id, variant_attribute_id);
-CREATE INDEX idx_evav_state_attr_span ON entity_varattr_value(entity_state_id, variant_attribute_id, span_id);
-
-CREATE INDEX idx_evav_lock_locked ON evav_lock(locked_evav_id);
-CREATE INDEX idx_evav_lock_locking ON evav_lock(locking_evav_id);
-CREATE INDEX idx_evav_lock_locked_locking ON evav_lock(locked_evav_id, locking_evav_id);
-
-
-
-
 DELIMITER $$
+
+
+DROP PROCEDURE IF EXISTS get_forward_attr_options_page$$
 CREATE PROCEDURE get_forward_attr_options_page (
     IN  p_vavs_id INT,
     IN  p_va_id INT,
     IN  p_variant_id INT,
     IN  p_causation_index INT,
     IN  p_limit INT,
-    IN  p_direction VARCHAR(6),    -- 'after' or 'before'
-    IN  p_commitHash VARCHAR(64)     -- optional Dolt commit hash
+    IN  p_direction VARCHAR(6)    -- 'after' or 'before'
 )
 BEGIN
-    DECLARE v_table_va      VARCHAR(200);
-    DECLARE v_table_vas     VARCHAR(200);
-    DECLARE v_table_vavspan VARCHAR(200);
+    WITH RECURSIVE VariantAttributeTraversal AS (
+        SELECT va.id AS variantAttributeId,
+               va.causation_index,
+               va.variant_id AS variantId,
+               vavs.id AS variantAttributeVariantSpanId,
+               cva.id AS variantAttributeVariantSpanVariantAttributeId,
+               vavs.variant_id AS parentVariantId,
+               1 AS Direction
+        FROM variant_attribute AS va
+        LEFT JOIN variant_attr_span AS vavs 
+               ON va.id = vavs.variant_attribute_id
+              AND vavs.id = p_vavs_id
+        LEFT JOIN vavspan_attr AS cva 
+               ON va.id = cva.variant_attribute_id
+        WHERE va.id = p_va_id
 
-    IF p_commitHash IS NOT NULL AND p_commitHash <> '' THEN
-        SET v_table_va      = CONCAT('variant_attribute AS OF ''', p_commitHash, '''');
-        SET v_table_vas     = CONCAT('variant_attr_span AS OF ''', p_commitHash, '''');
-        SET v_table_vavspan = CONCAT('vavspan_attr AS OF ''', p_commitHash, '''');
-    ELSE
-        SET v_table_va      = 'variant_attribute';
-        SET v_table_vas     = 'variant_attr_span';
-        SET v_table_vavspan = 'vavspan_attr';
-    END IF;
+        UNION ALL
 
-    SET @cte = CONCAT(
-      'WITH RECURSIVE VariantAttributeTraversal AS ( ',
-      '  SELECT va.id AS variantAttributeId, ',
-      '         va.causation_index, ',
-      '         va.variant_id AS variantId, ',
-      '         vavs.id AS variantAttributeVariantSpanId, ',
-      '         cva.id AS variantAttributeVariantSpanVariantAttributeId, ',
-      '         vavs.variant_id AS parentVariantId, ',
-      '         1 AS Direction ',
-      '  FROM ', v_table_va, ' AS va ',
-      '  LEFT JOIN ', v_table_vas, ' AS vavs ON va.id = vavs.variant_attribute_id AND vavs.id = ', p_vavs_id, ' ',
-      '  LEFT JOIN ', v_table_vavspan, ' AS cva ON va.id = cva.variant_attribute_id ',
-      '  WHERE va.id = ', p_va_id, ' ',
-      '  UNION ALL ',
-      '  SELECT va_sub.id, ',
-      '         va_sub.causation_index, ',
-      '         va_sub.variant_id, ',
-      '         vavs_sub.id, ',
-      '         cva_sub.id, ',
-      '         vavs_sub.variant_id, ',
-      '         vat.Direction ',
-      '  FROM VariantAttributeTraversal AS vat ',
-      '  JOIN ', v_table_vas, ' AS vavs_sub ON vat.variantId = vavs_sub.variant_id ',
-      '  JOIN ', v_table_va, ' AS va_sub ON vavs_sub.variant_attribute_id = va_sub.id AND vat.causation_index < va_sub.causation_index ',
-      '  LEFT JOIN ', v_table_vavspan, ' AS cva_sub ON va_sub.id = cva_sub.variant_attribute_id ',
-      '  WHERE vat.Direction = 1 ',
-      '  UNION ALL ',
-      '  SELECT va_parent.id, ',
-      '         va_parent.causation_index, ',
-      '         va_parent.variant_id, ',
-      '         vavs_parent.id, ',
-      '         cva_parent.id, ',
-      '         vavs_parent.variant_id, ',
-      '         2 AS Direction ',
-      '  FROM VariantAttributeTraversal AS vat ',
-      '  JOIN ', v_table_vas, ' AS vavs_parent ON vat.parentVariantId = vavs_parent.variant_id ',
-      '  JOIN ', v_table_va, ' AS va_parent ON vavs_parent.variant_attribute_id = va_parent.id AND vat.causation_index > va_parent.causation_index ',
-      '  LEFT JOIN ', v_table_vavspan, ' AS cva_parent ON va_parent.id = cva_parent.variant_attribute_id ',
-      ') '
-    );
+        SELECT va_sub.id,
+               va_sub.causation_index,
+               va_sub.variant_id,
+               vavs_sub.id,
+               cva_sub.id,
+               vavs_sub.variant_id,
+               vat.Direction
+        FROM VariantAttributeTraversal AS vat
+        JOIN variant_attr_span AS vavs_sub 
+          ON vat.variantId = vavs_sub.variant_id
+        JOIN variant_attribute AS va_sub 
+          ON vavs_sub.variant_attribute_id = va_sub.id
+         AND vat.causation_index < va_sub.causation_index
+        LEFT JOIN vavspan_attr AS cva_sub 
+          ON va_sub.id = cva_sub.variant_attribute_id
+        WHERE vat.Direction = 1
 
-    SET @baseSelect = 
-      'SELECT variantAttributeId, variantId, causation_index AS variantAttributeIndex, '  ||
-      '       variantAttributeVariantSpanVariantAttributeId, variantAttributeVariantSpanId '  ||
-      'FROM VariantAttributeTraversal ';
+        UNION ALL
 
-    IF p_direction = 'after' THEN
-        SET @whereOrder = 
-          'WHERE Direction = 2 AND (variantId > ? OR (variantId = ? AND variantAttributeIndex > ?)) ' ||
-          'ORDER BY variantId ASC, variantAttributeIndex ASC LIMIT ?';
-        SET @sql = CONCAT(@cte, @baseSelect, @whereOrder);
-    ELSE
-        SET @innerQuery = CONCAT(
-            @baseSelect,
-            'WHERE Direction = 2 AND (variantId < ? OR (variantId = ? AND variantAttributeIndex < ?)) ',
-            'ORDER BY variantId DESC, variantAttributeIndex DESC LIMIT ?'
-        );
-        SET @sql = CONCAT(@cte,
-            'SELECT * FROM (', @innerQuery, ') AS tmp ',
-            'ORDER BY tmp.variantId ASC, tmp.variantAttributeIndex ASC'
-        );
-    END IF;
-
-    SET @p_variant_id      = p_variant_id;
-    SET @p_causation_index = p_causation_index;
-    SET @p_limit           = p_limit;
-
-    PREPARE stmt FROM @sql;
-    EXECUTE stmt USING @p_variant_id, @p_variant_id, @p_causation_index, @p_limit;
-    DEALLOCATE PREPARE stmt;
-END $$
-DELIMITER ;
+        SELECT va_parent.id,
+               va_parent.causation_index,
+               va_parent.variant_id,
+               vavs_parent.id,
+               cva_parent.id,
+               vavs_parent.variant_id,
+               2 AS Direction
+        FROM VariantAttributeTraversal AS vat
+        JOIN variant_attr_span AS vavs_parent 
+          ON vat.parentVariantId = vavs_parent.variant_id
+        JOIN variant_attribute AS va_parent 
+          ON vavs_parent.variant_attribute_id = va_parent.id
+         AND vat.causation_index > va_parent.causation_index
+        LEFT JOIN vavspan_attr AS cva_parent 
+          ON va_parent.id = cva_parent.variant_attribute_id
+    ),
+    Filtered AS (
+        SELECT variantAttributeId,
+               variantId,
+               causation_index AS variantAttributeIndex,
+               variantAttributeVariantSpanVariantAttributeId,
+               variantAttributeVariantSpanId
+        FROM VariantAttributeTraversal
+        WHERE Direction = 2
+          AND (
+                (p_direction = 'after' 
+                  AND (variantId > p_variant_id 
+                       OR (variantId = p_variant_id AND causation_index > p_causation_index)))
+             OR (p_direction <> 'after'
+                  AND (variantId < p_variant_id 
+                       OR (variantId = p_variant_id AND causation_index < p_causation_index)))
+          )
+    ),
+    Ordered AS (
+        SELECT *,
+               CASE 
+                 WHEN p_direction = 'after' THEN variantId 
+                 ELSE -variantId 
+               END AS ord_variantId,
+               CASE 
+                 WHEN p_direction = 'after' THEN variantAttributeIndex 
+                 ELSE -variantAttributeIndex 
+               END AS ord_variantAttributeIndex
+        FROM Filtered
+        ORDER BY ord_variantId, ord_variantAttributeIndex
+        LIMIT p_limit
+    )
+    SELECT variantAttributeId,
+           variantId,
+           variantAttributeIndex,
+           variantAttributeVariantSpanVariantAttributeId,
+           variantAttributeVariantSpanId
+    FROM Ordered
+    ORDER BY variantId ASC, variantAttributeIndex ASC;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS get_span_options_page$$
 CREATE PROCEDURE get_span_options_page (
     IN p_va_id INT,
     IN p_cursor_weight DOUBLE,
     IN p_cursor_id INT,
     IN p_limit INT,
-    IN p_direction VARCHAR(6),  -- 'after' or 'before'
-    IN p_commitHash VARCHAR(64) -- optional commit hash
+    IN p_direction VARCHAR(6)  -- 'after' or 'before'
 )
 BEGIN
-    DECLARE v_table_va        VARCHAR(200);
-    DECLARE v_table_vas       VARCHAR(200);
-    DECLARE v_table_span      VARCHAR(200);
-    DECLARE v_table_vavspan   VARCHAR(200);
-    DECLARE v_table_var_act   VARCHAR(200);
-    DECLARE v_table_variation VARCHAR(200);
-    DECLARE v_table_var_delta VARCHAR(200);
+    SELECT *
+    FROM (
+        -- Base query: spans directly linked to the variant_attribute
+        SELECT s.id AS spanId,
+               s.label,
+               s.weight AS effective_weight,
+               'base' AS source
+        FROM span s
+        JOIN variant_attr_span vas ON s.id = vas.span_id
+        WHERE vas.variant_attribute_id = p_va_id
 
-    IF p_commitHash IS NOT NULL AND p_commitHash <> '' THEN
-        SET v_table_va         = CONCAT('variant_attribute AS OF ''', p_commitHash, '''');
-        SET v_table_vas        = CONCAT('variant_attr_span AS OF ''', p_commitHash, '''');
-        SET v_table_span       = CONCAT('span AS OF ''', p_commitHash, '''');
-        SET v_table_vavspan    = CONCAT('vavspan_attr AS OF ''', p_commitHash, '''');
-        SET v_table_var_act    = CONCAT('variation_activated_span AS OF ''', p_commitHash, '''');
-        SET v_table_variation  = CONCAT('variation AS OF ''', p_commitHash, '''');
-        SET v_table_var_delta  = CONCAT('variation_delta_weight AS OF ''', p_commitHash, '''');
-    ELSE
-        SET v_table_va         = 'variant_attribute';
-        SET v_table_vas        = 'variant_attr_span';
-        SET v_table_span       = 'span';
-        SET v_table_vavspan    = 'vavspan_attr';
-        SET v_table_var_act    = 'variation_activated_span';
-        SET v_table_variation  = 'variation';
-        SET v_table_var_delta  = 'variation_delta_weight';
-    END IF;
+        UNION ALL
 
-    -- Base query: spans directly linked to the variant_attribute
-    SET @base_query = CONCAT(
-        'SELECT s.id AS spanId, s.label, s.weight AS effective_weight, ''base'' AS source ',
-        'FROM ', v_table_span, ' s ',
-        'JOIN ', v_table_vas, ' vas ON s.id = vas.span_id ',
-        'WHERE vas.variant_attribute_id = ? '
-    );
-
-    -- Variation query: spans activated via a variation
-    SET @variation_query = CONCAT(
-        'SELECT s.id AS spanId, s.label, (s.weight + COALESCE(vdw.delta_weight, 0)) AS effective_weight, ''variation'' AS source ',
-        'FROM ', v_table_var_act, ' vas_act ',
-        'JOIN ', v_table_variation, ' v ON vas_act.variation_id = v.id AND v.is_inactive = 0 ',
-        'JOIN ', v_table_vavspan, ' vav ON v.to_modify_vavspan_attr_id = vav.id AND vav.variant_attribute_id = ? ',
-        'JOIN ', v_table_span, ' s ON vas_act.span_id = s.id ',
-        'LEFT JOIN ', v_table_var_delta, ' vdw ON v.id = vdw.variation_id AND s.id = vdw.span_id '
-    );
-
-    SET @union_query = CONCAT('(', @base_query, ') UNION ALL (', @variation_query, ')');
-
-    IF p_direction = 'after' THEN
-        SET @pagination_where = 'WHERE (effective_weight > ? OR (effective_weight = ? AND spanId > ?)) ';
-        SET @order_clause = 'ORDER BY effective_weight ASC, spanId ASC ';
-    ELSE
-        SET @pagination_where = 'WHERE (effective_weight < ? OR (effective_weight = ? AND spanId < ?)) ';
-        SET @order_clause = 'ORDER BY effective_weight DESC, spanId DESC ';
-    END IF;
-
-    SET @limit_clause = 'LIMIT ?';
-
-    SET @full_query = CONCAT(
-        'SELECT * FROM (', @union_query, ') t ',
-        @pagination_where,
-        @order_clause,
-        @limit_clause
-    );
-
-    -- Bind parameters in order:
-    --   1. p_va_id (base query)
-    --   2. p_va_id (variation query)
-    --   3. p_cursor_weight, 4. p_cursor_weight, 5. p_cursor_id (pagination)
-    --   6. p_limit (limit)
-    SET @p_va_id = p_va_id;
-    SET @p_cursor_weight = p_cursor_weight;
-    SET @p_cursor_id = p_cursor_id;
-    SET @p_limit = p_limit;
-
-    PREPARE stmt FROM @full_query;
-    EXECUTE stmt USING @p_va_id, @p_va_id, @p_cursor_weight, @p_cursor_weight, @p_cursor_id, @p_limit;
-    DEALLOCATE PREPARE stmt;
-END $$
-DELIMITER ;
+        -- Variation query: spans activated via a variation
+        SELECT s.id AS spanId,
+               s.label,
+               (s.weight + COALESCE(vdw.delta_weight, 0)) AS effective_weight,
+               'variation' AS source
+        FROM variation_activated_span vas_act
+        JOIN variation v 
+          ON vas_act.variation_id = v.id AND v.is_inactive = 0
+        JOIN vavspan_attr vav 
+          ON v.to_modify_vavspan_attr_id = vav.id
+         AND vav.variant_attribute_id = p_va_id
+        JOIN span s 
+          ON vas_act.span_id = s.id
+        LEFT JOIN variation_delta_weight vdw 
+          ON v.id = vdw.variation_id AND s.id = vdw.span_id
+    ) t
+    WHERE (
+        (p_direction = 'after' AND (t.effective_weight > p_cursor_weight 
+                                     OR (t.effective_weight = p_cursor_weight AND t.spanId > p_cursor_id)))
+        OR
+        (p_direction <> 'after' AND (t.effective_weight < p_cursor_weight 
+                                      OR (t.effective_weight = p_cursor_weight AND t.spanId < p_cursor_id)))
+    )
+    ORDER BY 
+         -- For 'after', order ascending; for 'before', order descending.
+         IF(p_direction = 'after', t.effective_weight, -t.effective_weight) ASC,
+         IF(p_direction = 'after', t.spanId, -t.spanId) ASC
+    LIMIT p_limit;
+END;
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS roll_discrete_varattr$$
 CREATE PROCEDURE roll_discrete_varattr (
-    IN  p_variantAttributeId      INT UNSIGNED,
-    IN  p_variantAttrVariantSpanId  INT UNSIGNED,
-    IN  p_excludeSpanId           INT UNSIGNED,
-    IN  p_commitHash              VARCHAR(64)
+    IN  p_variantAttributeId       INT UNSIGNED,
+    IN  p_variantAttrVariantSpanId INT UNSIGNED,
+    IN  p_excludeSpanId            INT UNSIGNED
 )
 proc_begin: BEGIN
-  -- Build dynamic table names (for AS OF queries)
-  DECLARE v_table_va           VARCHAR(200);
-  DECLARE v_table_vas          VARCHAR(200);
-  DECLARE v_table_span         VARCHAR(200);
-  DECLARE v_table_vavspan      VARCHAR(200);
-  DECLARE v_table_variation    VARCHAR(200);
-  DECLARE v_table_var_inactive VARCHAR(200);
-  DECLARE v_table_var_activated VARCHAR(200);
-  DECLARE v_table_var_delta    VARCHAR(200);
-  DECLARE v_totalWeight        DOUBLE DEFAULT 0;
-  DECLARE v_randomPick         DOUBLE DEFAULT 0;
-  DECLARE v_span_id            INT UNSIGNED DEFAULT NULL;
-  DECLARE sql_stmt             TEXT;
-  
-  IF p_commitHash IS NOT NULL AND p_commitHash <> '' THEN
-    SET v_table_va            = CONCAT('variant_attribute AS OF ''', p_commitHash, '''');
-    SET v_table_vas           = CONCAT('variant_attr_span AS OF ''', p_commitHash, '''');
-    SET v_table_span          = CONCAT('span AS OF ''', p_commitHash, '''');
-    SET v_table_vavspan       = CONCAT('vavspan_attr AS OF ''', p_commitHash, '''');
-    SET v_table_variation     = CONCAT('variation AS OF ''', p_commitHash, '''');
-    SET v_table_var_inactive  = CONCAT('variation_inactive_span AS OF ''', p_commitHash, '''');
-    SET v_table_var_activated = CONCAT('variation_activated_span AS OF ''', p_commitHash, '''');
-    SET v_table_var_delta     = CONCAT('variation_delta_weight AS OF ''', p_commitHash, '''');
-  ELSE
-    SET v_table_va            = 'variant_attribute';
-    SET v_table_vas           = 'variant_attr_span';
-    SET v_table_span          = 'span';
-    SET v_table_vavspan       = 'vavspan_attr';
-    SET v_table_variation     = 'variation';
-    SET v_table_var_inactive  = 'variation_inactive_span';
-    SET v_table_var_activated = 'variation_activated_span';
-    SET v_table_var_delta     = 'variation_delta_weight';
-  END IF;
+  DECLARE v_totalWeight   DOUBLE DEFAULT 0;
+  DECLARE v_randomPick    DOUBLE DEFAULT 0;
+  DECLARE v_span_id       INT UNSIGNED DEFAULT NULL;
   
   -- Build _OrderedSpans with candidate spans and cumulative weights
   DROP TEMPORARY TABLE IF EXISTS _OrderedSpans;
-  SET sql_stmt = CONCAT(
-    'CREATE TEMPORARY TABLE _OrderedSpans AS WITH BaseSpans AS (',
-      'SELECT s.id AS span_id, va.id AS variant_attribute_id, vas.id AS variant_attr_span_id, s.weight AS base_weight ',
-      'FROM ', v_table_va, ' va ',
-      'JOIN ', v_table_span, ' s ON s.attribute_id = va.attribute_id ',
-      'LEFT JOIN ', v_table_vas, ' vas ON vas.variant_attribute_id = va.id AND vas.span_id = s.id ',
-      'WHERE va.id = ', p_variantAttributeId, ' AND s.type = ''discrete'' ',
-      'AND (', p_excludeSpanId, ' = 0 OR s.id <> ', p_excludeSpanId, ') ',
-      'AND s.id IN (',
-          'SELECT s2.id FROM ', v_table_span, ' s2 ',
-          'JOIN ', v_table_vas, ' vas2 ON vas2.span_id = s2.id AND vas2.variant_attribute_id = va.id ',
-          'WHERE vas2.id = ', p_variantAttrVariantSpanId,
-      ')',
-    '), ActiveVariations AS (',
-      'SELECT v.id AS variation_id, vav.variant_attribute_id ',
-      'FROM ', v_table_variation, ' v ',
-      'JOIN ', v_table_vavspan, ' vav ON vav.id = v.to_modify_vavspan_attr_id AND vav.variant_attribute_id = ', p_variantAttributeId, ' ',
-      'WHERE v.is_inactive = 0',
-    '), InactiveSpans AS (',
-      'SELECT DISTINCT vis.span_id FROM ', v_table_var_inactive, ' vis ',
-      'JOIN ActiveVariations av ON av.variation_id = vis.variation_id',
-    '), ActivatedSpans AS (',
-      'SELECT DISTINCT vas.span_id, av.variant_attribute_id, NULL AS variant_attr_span_id, 0.0 AS base_weight ',
-      'FROM ', v_table_var_activated, ' vas ',
-      'JOIN ActiveVariations av ON av.variation_id = vas.variation_id',
-    '), DeltaWeights AS (',
-      'SELECT vdw.span_id, SUM(vdw.delta_weight) AS total_delta ',
-      'FROM ', v_table_var_delta, ' vdw ',
-      'JOIN ActiveVariations av ON av.variation_id = vdw.variation_id ',
-      'GROUP BY vdw.span_id',
-    '), AllRelevantSpans AS (',
-      'SELECT b.span_id, b.variant_attribute_id, b.variant_attr_span_id, b.base_weight ',
-      'FROM BaseSpans b WHERE b.span_id NOT IN (SELECT span_id FROM InactiveSpans) ',
-      'UNION ',
-      'SELECT a.span_id, a.variant_attribute_id, a.variant_attr_span_id, a.base_weight ',
-      'FROM ActivatedSpans a WHERE a.span_id NOT IN (SELECT span_id FROM InactiveSpans)',
-    '), FinalSpans AS (',
-      'SELECT ars.span_id, ars.variant_attribute_id, ars.variant_attr_span_id, ',
-      'COALESCE(ars.base_weight,0) + COALESCE(dw.total_delta,0) AS effective_weight ',
-      'FROM AllRelevantSpans ars LEFT JOIN DeltaWeights dw ON dw.span_id = ars.span_id',
-    '), OrderedSpans AS (',
-      'SELECT fs.span_id, fs.variant_attribute_id, fs.variant_attr_span_id, fs.effective_weight AS contextualWeight, ',
-      'SUM(fs.effective_weight) OVER (ORDER BY fs.span_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS runningTotal, ',
-      'LAG(SUM(fs.effective_weight) OVER (ORDER BY fs.span_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW),1,0) OVER (ORDER BY fs.span_id) AS prevRunningTotal ',
-      'FROM FinalSpans fs WHERE fs.effective_weight > 0 ORDER BY fs.span_id',
-    ') SELECT * FROM OrderedSpans'
-  );
-  PREPARE stmt FROM sql_stmt;
-  EXECUTE stmt;
-  DEALLOCATE PREPARE stmt;
+  
+  CREATE TEMPORARY TABLE _OrderedSpans AS
+  WITH BaseSpans AS (
+    SELECT s.id AS span_id, va.id AS variant_attribute_id, vas.id AS variant_attr_span_id, s.weight AS base_weight
+    FROM variant_attribute va
+    JOIN span s ON s.attribute_id = va.attribute_id
+    LEFT JOIN variant_attr_span vas ON vas.variant_attribute_id = va.id AND vas.span_id = s.id
+    WHERE va.id = p_variantAttributeId AND s.type = 'discrete'
+      AND (p_excludeSpanId = 0 OR s.id <> p_excludeSpanId)
+      AND s.id IN (
+        SELECT s2.id FROM span s2
+        JOIN variant_attr_span vas2 ON vas2.span_id = s2.id AND vas2.variant_attribute_id = va.id
+        WHERE vas2.id = p_variantAttrVariantSpanId
+      )
+  ), ActiveVariations AS (
+    SELECT v.id AS variation_id, vav.variant_attribute_id
+    FROM variation v
+    JOIN vavspan_attr vav ON vav.id = v.to_modify_vavspan_attr_id AND vav.variant_attribute_id = p_variantAttributeId
+    WHERE v.is_inactive = 0
+  ), InactiveSpans AS (
+    SELECT DISTINCT vis.span_id
+    FROM variation_inactive_span vis
+    JOIN ActiveVariations av ON av.variation_id = vis.variation_id
+  ), ActivatedSpans AS (
+    SELECT DISTINCT vas.span_id, av.variant_attribute_id, NULL AS variant_attr_span_id, 0.0 AS base_weight
+    FROM variation_activated_span vas
+    JOIN ActiveVariations av ON av.variation_id = vas.variation_id
+  ), DeltaWeights AS (
+    SELECT vdw.span_id, SUM(vdw.delta_weight) AS total_delta
+    FROM variation_delta_weight vdw
+    JOIN ActiveVariations av ON av.variation_id = vdw.variation_id
+    GROUP BY vdw.span_id
+  ), AllRelevantSpans AS (
+    SELECT b.span_id, b.variant_attribute_id, b.variant_attr_span_id, b.base_weight
+    FROM BaseSpans b
+    WHERE b.span_id NOT IN (SELECT span_id FROM InactiveSpans)
+    UNION
+    SELECT a.span_id, a.variant_attribute_id, a.variant_attr_span_id, a.base_weight
+    FROM ActivatedSpans a
+    WHERE a.span_id NOT IN (SELECT span_id FROM InactiveSpans)
+  ), FinalSpans AS (
+    SELECT ars.span_id, ars.variant_attribute_id, ars.variant_attr_span_id,
+           COALESCE(ars.base_weight,0) + COALESCE(dw.total_delta,0) AS effective_weight
+    FROM AllRelevantSpans ars
+    LEFT JOIN DeltaWeights dw ON dw.span_id = ars.span_id
+  ), OrderedSpans AS (
+    SELECT fs.span_id, fs.variant_attribute_id, fs.variant_attr_span_id, fs.effective_weight AS contextualWeight,
+           SUM(fs.effective_weight) OVER (ORDER BY fs.span_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS runningTotal,
+           LAG(SUM(fs.effective_weight) OVER (ORDER BY fs.span_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), 1, 0)
+             OVER (ORDER BY fs.span_id) AS prevRunningTotal
+    FROM FinalSpans fs
+    WHERE fs.effective_weight > 0
+    ORDER BY fs.span_id
+  )
+  SELECT * FROM OrderedSpans;
   
   -- Get total cumulative weight; if 0, return NULL.
   SELECT COALESCE(MAX(runningTotal), 0) INTO v_totalWeight FROM _OrderedSpans;
@@ -542,62 +243,49 @@ proc_begin: BEGIN
   
   DROP TEMPORARY TABLE IF EXISTS _OrderedSpans;
   SELECT v_span_id AS selected_span_id;
-END proc_begin $$
-DELIMITER ;
+END proc_begin$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS roll_continuous_varattr$$
 CREATE PROCEDURE roll_continuous_varattr (
     IN p_variantAttributeId INT UNSIGNED,
     IN p_variantAttrVariantSpanId INT UNSIGNED,  -- now required
-    IN p_excludeSpanId INT UNSIGNED,
-    IN p_commitHash VARCHAR(64)
+    IN p_excludeSpanId INT UNSIGNED
 )
 roll_cont_proc: BEGIN
-    -- Set table references based on commit hash.
-    DECLARE v_table_va, v_table_span, v_table_vas, v_table_variation, v_table_vavspan, v_table_var_cont VARCHAR(200);
-    IF p_commitHash IS NOT NULL AND p_commitHash <> '' THEN
-        SET v_table_va        = CONCAT('variant_attribute AS OF ''', p_commitHash, '''');
-        SET v_table_span      = CONCAT('span AS OF ''', p_commitHash, '''');
-        SET v_table_vas       = CONCAT('variant_attr_span AS OF ''', p_commitHash, '''');
-        SET v_table_variation = CONCAT('variation AS OF ''', p_commitHash, '''');
-        SET v_table_vavspan   = CONCAT('vavspan_attr AS OF ''', p_commitHash, '''');
-        SET v_table_var_cont  = CONCAT('variation_continuous_attr AS OF ''', p_commitHash, '''');
-    ELSE
-        SET v_table_va        = 'variant_attribute';
-        SET v_table_span      = 'span';
-        SET v_table_vas       = 'variant_attr_span';
-        SET v_table_variation = 'variation';
-        SET v_table_vavspan   = 'vavspan_attr';
-        SET v_table_var_cont  = 'variation_continuous_attr';
-    END IF;
-    
-    -- Retrieve the attribute details.
+    -- All declarations must be at the top in MySQL
     DECLARE v_attributeId INT UNSIGNED;
     DECLARE v_decimals INT DEFAULT 0;
     DECLARE v_min, v_max, v_normal DOUBLE;
     DECLARE v_percentNormal, v_percentPinned, v_percentSkewed DOUBLE;
     
-    SET @sql_attr = CONCAT(
-      'SELECT @attribute_id := va.attribute_id, ',
-      '       @decimals      := a.decimals, ',
-      '       @min           := a.min_value, ',
-      '       @max           := a.max_value, ',
-      '       @normal        := a.normal_value, ',
-      '       @percent_normal:= a.percent_normal, ',
-      '       @percent_pinned:= a.percent_pinned, ',
-      '       @percent_skewed:= a.percent_skewed ',
-      'FROM ', v_table_va, ' va ',
-      'JOIN attribute a ON a.id = va.attribute_id ',
-      'WHERE va.id = ? LIMIT 1'
-    );
-    PREPARE stmt_attr FROM @sql_attr;
-    SET @p_vaId = p_variantAttributeId;
-    EXECUTE stmt_attr USING @p_vaId;
-    DEALLOCATE PREPARE stmt_attr;
+    DECLARE v_totalDeltaNormal, v_totalDeltaPnormal, v_totalDeltaPskew DOUBLE DEFAULT 0;
+    DECLARE v_effMin, v_effMax, v_effNormal DOUBLE;
+    DECLARE v_tmp DOUBLE;
     
-    SELECT @attribute_id, @decimals, @min, @max, @normal, @percent_normal, @percent_pinned, @percent_skewed
-      INTO v_attributeId, v_decimals, v_min, v_max, v_normal, v_percentNormal, v_percentPinned, v_percentSkewed;
+    DECLARE v_totalDiscreteValues, v_randomUniform, v_midpoint, v_skewOffset, v_normalOffset DOUBLE;
+    DECLARE v_degreeEstimate, v_discreteDegreeEstimate, v_cubicDegreeEstimate DOUBLE;
+    DECLARE v_skewed, v_distributed, v_multiplier, v_offset, v_result, v_clampedResult DOUBLE;
+    DECLARE v_mult, v_avg DOUBLE;
+    
+    DECLARE v_chosenSpanId INT UNSIGNED DEFAULT NULL;
+    DECLARE dummyEffMin DOUBLE;
+    DECLARE dummyEffMax DOUBLE;
+    
+    -- Retrieve the attribute details.
+    SELECT va.attribute_id,
+           a.decimals,
+           a.min_value,
+           a.max_value,
+           a.normal_value,
+           a.percent_normal,
+           a.percent_pinned,
+           a.percent_skewed
+      INTO v_attributeId, v_decimals, v_min, v_max, v_normal, v_percentNormal, v_percentPinned, v_percentSkewed
+      FROM variant_attribute va
+      JOIN attribute a ON a.id = va.attribute_id
+     WHERE va.id = p_variantAttributeId
+     LIMIT 1;
     
     IF v_attributeId IS NULL THEN
         SELECT 'No matching attribute found' AS error_message;
@@ -605,28 +293,21 @@ roll_cont_proc: BEGIN
     END IF;
     
     -- Sum up all variation deltas for this attribute.
-    DECLARE v_totalDeltaNormal, v_totalDeltaPnormal, v_totalDeltaPskew DOUBLE DEFAULT 0;
-    SET @sql_summed = CONCAT(
-      'SELECT @total_delta_normal := COALESCE(SUM(vca.delta_normal),0), ',
-      '       @total_delta_pnormal:= COALESCE(SUM(vca.delta_percent_normal),0), ',
-      '       @total_delta_pskew  := COALESCE(SUM(vca.delta_percent_skewed),0) ',
-      'FROM ', v_table_var_cont, ' vca ',
-      'JOIN (SELECT v.id FROM ', v_table_variation, ' v ',
-      '      JOIN ', v_table_vavspan, ' vav ON vav.id = v.to_modify_vavspan_attr_id ',
-      '      WHERE vav.variant_attribute_id = ? AND vav.id = ? AND v.is_inactive = 0) av ',
-      'ON av.id = vca.variation_id'
-    );
-    PREPARE stmt_summed FROM @sql_summed;
-    SET @p_vaId2    = p_variantAttributeId;
-    SET @p_vavspanId= p_variantAttrVariantSpanId;
-    EXECUTE stmt_summed USING @p_vaId2, @p_vavspanId;
-    DEALLOCATE PREPARE stmt_summed;
-    
-    SELECT @total_delta_normal, @total_delta_pnormal, @total_delta_pskew
-      INTO v_totalDeltaNormal, v_totalDeltaPnormal, v_totalDeltaPskew;
+    SELECT COALESCE(SUM(vca.delta_normal), 0),
+           COALESCE(SUM(vca.delta_percent_normal), 0),
+           COALESCE(SUM(vca.delta_percent_skewed), 0)
+      INTO v_totalDeltaNormal, v_totalDeltaPnormal, v_totalDeltaPskew
+      FROM variation_continuous_attr vca
+      JOIN (
+            SELECT v.id
+              FROM variation v
+              JOIN vavspan_attr vav ON vav.id = v.to_modify_vavspan_attr_id
+             WHERE vav.variant_attribute_id = p_variantAttributeId
+               AND vav.id = p_variantAttrVariantSpanId
+               AND v.is_inactive = 0
+           ) av ON av.id = vca.variation_id;
     
     -- Compute effective min, max and normal.
-    DECLARE v_effMin, v_effMax, v_effNormal DOUBLE;
     IF (v_totalDeltaPnormal <> 0 OR v_totalDeltaPskew <> 0) THEN
         SET v_effMin    = (v_min + v_totalDeltaNormal) * (1 + v_totalDeltaPnormal + v_totalDeltaPskew);
         SET v_effMax    = (v_max + v_totalDeltaNormal) * (1 + v_totalDeltaPnormal + v_totalDeltaPskew);
@@ -637,31 +318,29 @@ roll_cont_proc: BEGIN
         SET v_effNormal = v_normal + v_totalDeltaNormal;
     END IF;
     IF v_effMax < v_effMin THEN
-        DECLARE v_tmp DOUBLE;
         SET v_tmp = v_effMin;
         SET v_effMin = v_effMax;
         SET v_effMax = v_tmp;
     END IF;
     
     -- Generate a skewed random number.
-    DECLARE v_totalDiscreteValues, v_randomUniform, v_midpoint, v_skewOffset, v_normalOffset DOUBLE;
-    DECLARE v_degreeEstimate, v_discreteDegreeEstimate, v_cubicDegreeEstimate DOUBLE;
-    DECLARE v_skewed, v_distributed, v_multiplier, v_offset, v_result, v_clampedResult DOUBLE;
-    DECLARE v_mult, v_avg DOUBLE;
-    
     SET v_totalDiscreteValues = (v_effMax - v_effMin) * POW(10, v_decimals) + 1;
-    IF v_totalDiscreteValues < 1 THEN SET v_totalDiscreteValues = 1; END IF;
+    IF v_totalDiscreteValues < 1 THEN 
+        SET v_totalDiscreteValues = 1; 
+    END IF;
     SET v_randomUniform = RAND() * v_totalDiscreteValues;
     SET v_midpoint      = v_totalDiscreteValues / 2;
     SET v_skewOffset    = (-v_midpoint * IFNULL(v_percentSkewed, 0)) / 100;
     SET v_normalOffset  = v_effNormal - ((v_effMax - v_effMin) / 2) - v_effMin;
-    IF v_percentNormal IS NULL OR v_percentNormal <= 0 THEN SET v_percentNormal = 0; END IF;
-    SET v_degreeEstimate       = -2.3 / LN((v_percentNormal / 100) + 0.000052) - 0.5;
-    SET v_mult                 = FLOOR(v_degreeEstimate / 0.04);
+    IF v_percentNormal IS NULL OR v_percentNormal <= 0 THEN 
+        SET v_percentNormal = 0; 
+    END IF;
+    SET v_degreeEstimate         = -2.3 / LN((v_percentNormal / 100) + 0.000052) - 0.5;
+    SET v_mult                   = FLOOR(v_degreeEstimate / 0.04);
     SET v_discreteDegreeEstimate = v_degreeEstimate - (v_mult * 0.04);
-    SET v_cubicDegreeEstimate  = 1 + 2 * v_discreteDegreeEstimate;
-    SET v_skewed               = v_randomUniform - v_midpoint - v_skewOffset;
-    SET v_distributed          = SIGN(v_skewed) * POW(ABS(v_skewed), v_cubicDegreeEstimate);
+    SET v_cubicDegreeEstimate    = 1 + 2 * v_discreteDegreeEstimate;
+    SET v_skewed                 = v_randomUniform - v_midpoint - v_skewOffset;
+    SET v_distributed            = SIGN(v_skewed) * POW(ABS(v_skewed), v_cubicDegreeEstimate);
     IF (v_totalDiscreteValues - 2 * v_skewOffset * SIGN(v_skewed)) = 0 THEN
         SET v_multiplier = 0;
     ELSE
@@ -681,64 +360,53 @@ roll_cont_proc: BEGIN
     END IF;
     
     -- Build span selection query (add exclusion if needed).
-    DECLARE v_excludeClause VARCHAR(50) DEFAULT '';
-    DECLARE v_hasExclude INT DEFAULT 0;
     IF p_excludeSpanId IS NOT NULL AND p_excludeSpanId <> 0 THEN
-        SET v_excludeClause = ' AND s.id <> ?';
-        SET v_hasExclude = 1;
-    END IF;
-    
-    DECLARE v_chosenSpanId INT UNSIGNED DEFAULT NULL;
-    SET @sql_span = CONCAT(
-        'SELECT @span_id := s.id, ',
-        '       CASE WHEN (? <> 0 OR ? <> 0) THEN (s.min_value + ?) * (1 + ? + ?) ELSE (s.min_value + ?) END AS eff_min, ',
-        '       CASE WHEN (? <> 0 OR ? <> 0) THEN (s.max_value + ?) * (1 + ? + ?) ELSE (s.max_value + ?) END AS eff_max ',
-        'FROM ', v_table_span, ' s ',
-        'JOIN ', v_table_vas, ' vas ON vas.span_id = s.id ',
-        'WHERE s.attribute_id = ? AND s.type = ''continuous''',
-        v_excludeClause,
-        ' AND vas.id = ? HAVING eff_min <= ? AND eff_max > ? LIMIT 1'
-    );
-    PREPARE stmt_span FROM @sql_span;
-    -- Set parameters for the two versions (with or without the exclusion clause).
-    IF v_hasExclude = 1 THEN
-        SET @p1  = v_totalDeltaPnormal; SET @p2  = v_totalDeltaPskew; SET @p3  = v_totalDeltaNormal;
-        SET @p4  = v_totalDeltaPnormal; SET @p5  = v_totalDeltaPskew; SET @p6  = v_totalDeltaNormal;
-        SET @p7  = v_totalDeltaPnormal; SET @p8  = v_totalDeltaPskew; SET @p9  = v_totalDeltaNormal;
-        SET @p10 = v_totalDeltaPnormal; SET @p11 = v_totalDeltaPskew; SET @p12 = v_totalDeltaNormal;
-        SET @p13 = v_attributeId;
-        SET @p14 = p_excludeSpanId;
-        SET @p15 = p_variantAttrVariantSpanId;
-        SET @p16 = v_clampedResult; SET @p17 = v_clampedResult;
-        EXECUTE stmt_span USING
-            @p1,@p2,@p3,@p4,@p5,@p6,
-            @p7,@p8,@p9,@p10,@p11,@p12,
-            @p13,@p14,@p15,@p16,@p17;
+        SELECT s.id,
+               CASE WHEN (v_totalDeltaPnormal <> 0 OR v_totalDeltaPskew <> 0)
+                    THEN (s.min_value + v_totalDeltaNormal) * (1 + v_totalDeltaPnormal + v_totalDeltaPskew)
+                    ELSE (s.min_value + v_totalDeltaNormal)
+               END AS eff_min,
+               CASE WHEN (v_totalDeltaPnormal <> 0 OR v_totalDeltaPskew <> 0)
+                    THEN (s.max_value + v_totalDeltaNormal) * (1 + v_totalDeltaPnormal + v_totalDeltaPskew)
+                    ELSE (s.max_value + v_totalDeltaNormal)
+               END AS eff_max
+          INTO v_chosenSpanId, dummyEffMin, dummyEffMax
+          FROM span s
+          JOIN variant_attr_span vas ON vas.span_id = s.id
+         WHERE s.attribute_id = v_attributeId
+           AND s.type = 'continuous'
+           AND s.id <> p_excludeSpanId
+           AND vas.id = p_variantAttrVariantSpanId
+        HAVING eff_min <= v_clampedResult AND eff_max > v_clampedResult
+         LIMIT 1;
     ELSE
-        SET @p1  = v_totalDeltaPnormal; SET @p2  = v_totalDeltaPskew; SET @p3  = v_totalDeltaNormal;
-        SET @p4  = v_totalDeltaPnormal; SET @p5  = v_totalDeltaPskew; SET @p6  = v_totalDeltaNormal;
-        SET @p7  = v_totalDeltaPnormal; SET @p8  = v_totalDeltaPskew; SET @p9  = v_totalDeltaNormal;
-        SET @p10 = v_totalDeltaPnormal; SET @p11 = v_totalDeltaPskew; SET @p12 = v_totalDeltaNormal;
-        SET @p13 = v_attributeId;
-        SET @p14 = p_variantAttrVariantSpanId;
-        SET @p15 = v_clampedResult; SET @p16 = v_clampedResult;
-        EXECUTE stmt_span USING
-            @p1,@p2,@p3,@p4,@p5,@p6,
-            @p7,@p8,@p9,@p10,@p11,@p12,
-            @p13,@p14,@p15,@p16;
+        SELECT s.id,
+               CASE WHEN (v_totalDeltaPnormal <> 0 OR v_totalDeltaPskew <> 0)
+                    THEN (s.min_value + v_totalDeltaNormal) * (1 + v_totalDeltaPnormal + v_totalDeltaPskew)
+                    ELSE (s.min_value + v_totalDeltaNormal)
+               END AS eff_min,
+               CASE WHEN (v_totalDeltaPnormal <> 0 OR v_totalDeltaPskew <> 0)
+                    THEN (s.max_value + v_totalDeltaNormal) * (1 + v_totalDeltaPnormal + v_totalDeltaPskew)
+                    ELSE (s.max_value + v_totalDeltaNormal)
+               END AS eff_max
+          INTO v_chosenSpanId, dummyEffMin, dummyEffMax
+          FROM span s
+          JOIN variant_attr_span vas ON vas.span_id = s.id
+         WHERE s.attribute_id = v_attributeId
+           AND s.type = 'continuous'
+           AND vas.id = p_variantAttrVariantSpanId
+        HAVING eff_min <= v_clampedResult AND eff_max > v_clampedResult
+         LIMIT 1;
     END IF;
-    DEALLOCATE PREPARE stmt_span;
     
-    SELECT @span_id AS span_id, v_clampedResult AS chosen_value;
-END roll_cont_proc $$
-DELIMITER ;
+    SELECT v_chosenSpanId AS span_id, v_clampedResult AS chosen_value;
+END roll_cont_proc;
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS generate_entity_state$$
 CREATE PROCEDURE generate_entity_state(
     IN  p_entity_id                    INT UNSIGNED,
     IN  p_time                         DOUBLE,
-    IN  p_commitHash                   VARCHAR(64),
     IN  p_regenerate_entity_state_id   INT UNSIGNED
 )
 BEGIN
@@ -758,25 +426,13 @@ BEGIN
         DECLARE v_used_span_id            INT UNSIGNED;
         DECLARE v_sub_variant_id          INT UNSIGNED;
         DECLARE done                      INT DEFAULT FALSE;
-        DECLARE v_use_commit              TINYINT DEFAULT 0;
-
-        SET v_use_commit = (p_commitHash IS NOT NULL AND p_commitHash <> '');
 
         -- 0) Get the root variant.
-        IF v_use_commit THEN
-            SET @tbl = CONCAT('entity AS OF ''', p_commitHash, '''');
-            SET @sql = CONCAT('SELECT variant_id FROM ', @tbl, ' WHERE id = ? LIMIT 1');
-            PREPARE stmt FROM @sql;
-            SET @p_entity_id = p_entity_id;
-            EXECUTE stmt USING @p_entity_id INTO v_root_variant_id;
-            DEALLOCATE PREPARE stmt;
-        ELSE
-            SELECT variant_id 
-              INTO v_root_variant_id 
-              FROM entity 
-             WHERE id = p_entity_id 
-             LIMIT 1;
-        END IF;
+        SELECT variant_id 
+          INTO v_root_variant_id 
+          FROM entity 
+         WHERE id = p_entity_id 
+         LIMIT 1;
 
         IF v_root_variant_id IS NULL THEN
            SELECT CONCAT('No entity found with id=', p_entity_id) AS error_message;
@@ -817,26 +473,11 @@ BEGIN
 
             -- 3B) Populate _VariantAttributes for the current variant.
             TRUNCATE TABLE _VariantAttributes;
-            IF v_use_commit THEN
-                SET @tbl_va = CONCAT('variant_attribute AS OF ''', p_commitHash, '''');
-                SET @tbl_a  = CONCAT('attribute AS OF ''', p_commitHash, '''');
-                SET @sql = CONCAT(
-                    'INSERT INTO _VariantAttributes (va_id, attr_type) ',
-                    'SELECT va.id, a.type FROM ', @tbl_va, ' va ',
-                    'JOIN ', @tbl_a, ' a ON a.id = va.attribute_id ',
-                    'WHERE va.variant_id = ?'
-                );
-                PREPARE stmt FROM @sql;
-                SET @v_current_variant = v_current_variant;
-                EXECUTE stmt USING @v_current_variant;
-                DEALLOCATE PREPARE stmt;
-            ELSE
-                INSERT INTO _VariantAttributes (va_id, attr_type)
-                SELECT va.id, a.type 
-                  FROM variant_attribute va
-                  JOIN attribute a ON a.id = va.attribute_id
-                 WHERE va.variant_id = v_current_variant;
-            END IF;
+            INSERT INTO _VariantAttributes (va_id, attr_type)
+            SELECT va.id, a.type 
+              FROM variant_attribute va
+              JOIN attribute a ON a.id = va.attribute_id
+             WHERE va.variant_id = v_current_variant;
 
             -- 3C) Process each variant attribute.
             SET done = FALSE;
@@ -873,14 +514,14 @@ BEGIN
                         SET v_used_span_id = v_existing_span_id;
                     ELSE
                         IF cur_attr_type = 'discrete' THEN
-                            CALL roll_discrete_varattr(cur_va_id, v_variantAttrVariantSpanId, 0, p_commitHash);
+                            CALL roll_discrete_varattr(cur_va_id, v_variantAttrVariantSpanId, 0);
                             SELECT @span_id INTO v_new_span_id;
                             UPDATE entity_varattr_value
                                SET span_id = v_new_span_id
                              WHERE id = v_existing_evav_id;
                             SET v_used_span_id = v_new_span_id;
                         ELSE
-                            CALL roll_continuous_varattr(cur_va_id, v_variantAttrVariantSpanId, 0, p_commitHash);
+                            CALL roll_continuous_varattr(cur_va_id, v_variantAttrVariantSpanId, 0);
                             SELECT @span_id, @chosen_value INTO v_new_span_id, v_new_numeric;
                             UPDATE entity_varattr_value
                                SET span_id = v_new_span_id, numeric_value = v_new_numeric
@@ -890,7 +531,7 @@ BEGIN
                     END IF;
                 ELSE
                     IF cur_attr_type = 'discrete' THEN
-                        CALL roll_discrete_varattr(cur_va_id, v_variantAttrVariantSpanId, 0, p_commitHash);
+                        CALL roll_discrete_varattr(cur_va_id, v_variantAttrVariantSpanId, 0);
                         SELECT @span_id INTO v_new_span_id;
                         INSERT INTO entity_varattr_value (
                             entity_state_id,
@@ -905,7 +546,7 @@ BEGIN
                         );
                         SET v_used_span_id = v_new_span_id;
                     ELSE
-                        CALL roll_continuous_varattr(cur_va_id, v_variantAttrVariantSpanId, 0, p_commitHash);
+                        CALL roll_continuous_varattr(cur_va_id, v_variantAttrVariantSpanId, 0);
                         SELECT @span_id, @chosen_value INTO v_new_span_id, v_new_numeric;
                         INSERT INTO entity_varattr_value (
                             entity_state_id,
@@ -923,25 +564,12 @@ BEGIN
                 END IF;
 
                 -- 3D) If the chosen span activates a sub–variant, enqueue it.
-                IF v_use_commit THEN
-                    SET @tbl_vas = CONCAT('variant_attr_span AS OF ''', p_commitHash, '''');
-                    SET @sql = CONCAT(
-                        'SELECT variant_id FROM ', @tbl_vas,
-                        ' WHERE variant_attribute_id = ? AND id = ? LIMIT 1'
-                    );
-                    PREPARE stmt FROM @sql;
-                    SET @cur_va_id = cur_va_id;
-                    SET @v_used_span_id = v_used_span_id;
-                    EXECUTE stmt USING @cur_va_id, @v_used_span_id INTO v_sub_variant_id;
-                    DEALLOCATE PREPARE stmt;
-                ELSE
-                    SELECT variant_id 
-                      INTO v_sub_variant_id
-                      FROM variant_attr_span
-                     WHERE variant_attribute_id = cur_va_id
-                       AND id = v_used_span_id
-                     LIMIT 1;
-                END IF;
+                SELECT variant_id 
+                  INTO v_sub_variant_id
+                  FROM variant_attr_span
+                 WHERE variant_attribute_id = cur_va_id
+                   AND id = v_used_span_id
+                 LIMIT 1;
                 IF v_sub_variant_id IS NOT NULL AND v_sub_variant_id <> v_current_variant THEN
                     INSERT IGNORE INTO _VariantQueue (variant_id)
                     VALUES (v_sub_variant_id);
@@ -955,15 +583,13 @@ BEGIN
 
         SELECT v_entity_state_id AS new_entity_state_id;
     END generate_entity_state_proc;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS reroll_entity_varattr_value$$
 CREATE PROCEDURE reroll_entity_varattr_value(
     IN p_entityVarAttrValueId INT UNSIGNED,
-    IN p_excludeCurrent BOOLEAN,
-    IN p_commitHash VARCHAR(64)
+    IN p_excludeCurrent BOOLEAN
 )
 BEGIN
     -- Local variables
@@ -973,57 +599,26 @@ BEGIN
     DECLARE v_variantAttrVariantSpanId INT UNSIGNED;
     DECLARE v_excludeSpanId      INT UNSIGNED;
     
-    -- Build dynamic table names for AS OF queries if a commit hash is provided.
-    DECLARE v_entity_table   VARCHAR(200);
-    DECLARE v_va_table       VARCHAR(200);
-    DECLARE v_attr_table     VARCHAR(200);
-    DECLARE v_vavspan_table  VARCHAR(200);
-    
-    IF p_commitHash IS NOT NULL AND p_commitHash <> '' THEN
-        SET v_entity_table  = CONCAT('entity_varattr_value AS OF ''', p_commitHash, '''');
-        SET v_va_table      = CONCAT('variant_attribute AS OF ''', p_commitHash, '''');
-        SET v_attr_table    = CONCAT('attribute AS OF ''', p_commitHash, '''');
-        SET v_vavspan_table = CONCAT('vavspan_attr AS OF ''', p_commitHash, '''');
-    ELSE
-        SET v_entity_table  = 'entity_varattr_value';
-        SET v_va_table      = 'variant_attribute';
-        SET v_attr_table    = 'attribute';
-        SET v_vavspan_table = 'vavspan_attr';
-    END IF;
-    
     -- 1) Look up the variant_attribute_id and current span.
-    SET @sql = CONCAT(
-         'SELECT variant_attribute_id, IFNULL(span_id, 0) ',
-         'FROM ', v_entity_table, ' ',
-         'WHERE id = ?'
-    );
-    PREPARE stmt FROM @sql;
-    SET @p_id = p_entityVarAttrValueId;
-    EXECUTE stmt USING @p_id INTO v_variantAttributeId, v_currentSpanId;
-    DEALLOCATE PREPARE stmt;
+    SELECT variant_attribute_id, IFNULL(span_id, 0)
+      INTO v_variantAttributeId, v_currentSpanId
+      FROM entity_varattr_value
+     WHERE id = p_entityVarAttrValueId;
     
     -- 2) Get the attribute type from variant_attribute joined to attribute.
-    SET @sql = CONCAT(
-         'SELECT a.type ',
-         'FROM ', v_va_table, ' va ',
-         'JOIN ', v_attr_table, ' a ON a.id = va.attribute_id ',
-         'WHERE va.id = ? LIMIT 1'
-    );
-    PREPARE stmt FROM @sql;
-    SET @p_va = v_variantAttributeId;
-    EXECUTE stmt USING @p_va INTO v_attributeType;
-    DEALLOCATE PREPARE stmt;
+    SELECT a.type
+      INTO v_attributeType
+      FROM variant_attribute va
+      JOIN attribute a ON a.id = va.attribute_id
+     WHERE va.id = v_variantAttributeId
+     LIMIT 1;
     
     -- 3) Look up the candidate variant_attr_span id.
-    SET @sql = CONCAT(
-         'SELECT variant_attr_span_id ',
-         'FROM ', v_vavspan_table, ' ',
-         'WHERE variant_attribute_id = ? LIMIT 1'
-    );
-    PREPARE stmt FROM @sql;
-    SET @p_va2 = v_variantAttributeId;
-    EXECUTE stmt USING @p_va2 INTO v_variantAttrVariantSpanId;
-    DEALLOCATE PREPARE stmt;
+    SELECT variant_attr_span_id
+      INTO v_variantAttrVariantSpanId
+      FROM vavspan_attr
+     WHERE variant_attribute_id = v_variantAttributeId
+     LIMIT 1;
     
     -- 4) Exclude the current span if requested.
     SET v_excludeSpanId = IF(p_excludeCurrent, v_currentSpanId, 0);
@@ -1033,8 +628,7 @@ BEGIN
         CALL roll_discrete_varattr(
              v_variantAttributeId,
              v_variantAttrVariantSpanId,
-             v_excludeSpanId,
-             p_commitHash
+             v_excludeSpanId
         );
         UPDATE entity_varattr_value
           SET span_id = @span_id,
@@ -1044,8 +638,7 @@ BEGIN
         CALL roll_continuous_varattr(
              v_variantAttributeId,
              v_variantAttrVariantSpanId,
-             v_excludeSpanId,
-             p_commitHash
+             v_excludeSpanId
         );
         UPDATE entity_varattr_value
           SET span_id = @span_id,
@@ -1060,11 +653,10 @@ BEGIN
     SELECT *
       FROM entity_varattr_value
      WHERE id = p_entityVarAttrValueId;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS set_discrete_span_percentage$$
 CREATE PROCEDURE set_discrete_span_percentage (
     IN in_span_id INT UNSIGNED,
     IN in_new_fraction DOUBLE
@@ -1150,10 +742,9 @@ BEGIN
          WHERE id = in_span_id;
     END IF;
 END$$
-DELIMITER ;
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS add_variant_attribute$$
 CREATE PROCEDURE add_variant_attribute(
     IN p_variant_id INT UNSIGNED,
     IN p_attribute_id INT UNSIGNED,
@@ -1191,11 +782,10 @@ BEGIN
 
     -- Return the new variant_attribute id.
     SELECT LAST_INSERT_ID() AS new_variant_attribute_id;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS remove_variant_attribute$$
 CREATE PROCEDURE remove_variant_attribute(
     IN p_variant_attribute_id INT UNSIGNED
 )
@@ -1219,11 +809,10 @@ BEGIN
        SET causation_index = causation_index - 1
      WHERE variant_id = v_variant_id
        AND causation_index > v_position;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS move_variant_attribute$$
 CREATE PROCEDURE move_variant_attribute(
     IN p_variant_attribute_id INT UNSIGNED,
     IN p_new_position INT
@@ -1279,11 +868,10 @@ BEGIN
            SET causation_index = p_new_position
          WHERE id = p_variant_attribute_id;
     END proc_move;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS add_discrete_span$$
 CREATE PROCEDURE add_discrete_span(
     IN p_attribute_id INT UNSIGNED,
     IN p_label VARCHAR(255)
@@ -1362,11 +950,10 @@ BEGIN
     AND label = p_label
     ORDER BY id DESC
     LIMIT 1;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS remove_discrete_span$$
 CREATE PROCEDURE remove_discrete_span(
     IN p_span_id INT UNSIGNED
 )
@@ -1442,11 +1029,10 @@ BEGIN
     AND is_percentage_pinned = 0
     ORDER BY id ASC
     LIMIT 1;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS add_continuous_span$$
 CREATE PROCEDURE add_continuous_span(
     IN p_attribute_id INT UNSIGNED,
     IN p_label VARCHAR(255),
@@ -1533,11 +1119,10 @@ BEGIN
     
 proc_end: 
     SELECT 'Continuous span added successfully' AS message;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS remove_continuous_span$$
 CREATE PROCEDURE remove_continuous_span(
     IN p_span_id INT UNSIGNED
 )
@@ -1599,11 +1184,10 @@ BEGIN
     DELETE FROM span WHERE id = p_span_id;
     
     SELECT 'Continuous span removed and adjacent span merged successfully' AS message;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS set_variant_span$$
 CREATE PROCEDURE set_variant_span(
     IN p_variant_attribute_id INT UNSIGNED,
     IN p_span_id              INT UNSIGNED,
@@ -1651,10 +1235,9 @@ BEGIN
       ON DUPLICATE KEY UPDATE
           variant_attr_span_id = VALUES(variant_attr_span_id);
 END$$
-DELIMITER ;
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS unset_variant_span$$
 CREATE PROCEDURE unset_variant_span(
     IN p_variant_attribute_id INT UNSIGNED,
     IN p_span_id              INT UNSIGNED
@@ -1693,10 +1276,9 @@ BEGIN
      WHERE variant_attribute_id = p_variant_attribute_id
        AND variant_attr_span_id = v_vas_id;
 END$$
-DELIMITER ;
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS add_continuous_variation$$
 CREATE PROCEDURE add_continuous_variation(
     IN p_activating_span_id         INT UNSIGNED,
     IN p_to_modify_vavspan_attr_id  INT UNSIGNED,
@@ -1738,10 +1320,9 @@ BEGIN
     -- Return the new variation id
     SELECT v_variation_id AS variation_id;
 END$$
-DELIMITER ;
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS remove_continuous_variation$$
 CREATE PROCEDURE remove_continuous_variation(
     IN p_variation_id INT UNSIGNED
 )
@@ -1749,10 +1330,9 @@ BEGIN
     -- Deleting variation cascades
     DELETE FROM variation WHERE id = p_variation_id;
 END$$
-DELIMITER ;
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS add_delta_weight_variation$$
 CREATE PROCEDURE add_delta_weight_variation(
     IN p_activating_span_id         INT UNSIGNED,
     IN p_to_modify_vavspan_attr_id  INT UNSIGNED,
@@ -1790,10 +1370,9 @@ BEGIN
 
     SELECT v_variation_id AS variation_id;
 END$$
-DELIMITER ;
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS remove_delta_weight_variation$$
 CREATE PROCEDURE remove_delta_weight_variation(
     IN p_variation_id INT UNSIGNED
 )
@@ -1801,10 +1380,9 @@ BEGIN
     -- Deleting variation cascades
     DELETE FROM variation WHERE id = p_variation_id;
 END$$
-DELIMITER ;
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS add_deactivated_span_variation$$
 CREATE PROCEDURE add_deactivated_span_variation(
     IN p_activating_span_id         INT UNSIGNED,
     IN p_to_modify_vavspan_attr_id  INT UNSIGNED,
@@ -1841,10 +1419,9 @@ BEGIN
 
     SELECT v_variation_id AS variation_id;
 END$$
-DELIMITER ;
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS remove_deactivated_span_variation$$
 CREATE PROCEDURE remove_deactivated_span_variation(
     IN p_variation_id INT UNSIGNED
 )
@@ -1852,10 +1429,9 @@ BEGIN
     -- Deleting variation cascades
     DELETE FROM variation WHERE id = p_variation_id;
 END$$
-DELIMITER ;
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS add_activated_span_variation$$
 CREATE PROCEDURE add_activated_span_variation(
     IN p_activating_span_id         INT UNSIGNED,
     IN p_to_modify_vavspan_attr_id  INT UNSIGNED,
@@ -1914,10 +1490,9 @@ BEGIN
 
     SELECT v_variation_id AS variation_id, v_new_span_id AS activated_span_id;
 END$$
-DELIMITER ;
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS remove_activated_span_variation$$
 CREATE PROCEDURE remove_activated_span_variation(
     IN p_variation_id INT UNSIGNED
 )
@@ -1939,10 +1514,9 @@ BEGIN
     DELETE FROM span
      WHERE id = v_activated_span_id;
 END$$
-DELIMITER ;
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS lock_entity_varattr_value$$
 CREATE PROCEDURE lock_entity_varattr_value(IN p_evav_id INT UNSIGNED)
 BEGIN
   WITH RECURSIVE dependency_chain (evav_id, entity_state_id, variant_attribute_id, span_id, locking_evav_id) AS (
@@ -1988,11 +1562,10 @@ BEGIN
       OR (d.locking_evav_id IS NOT NULL AND l.locking_evav_id = d.locking_evav_id)
        )
   WHERE l.id IS NULL;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS unlock_entity_varattr_value$$
 CREATE PROCEDURE unlock_entity_varattr_value(IN p_evav_id INT UNSIGNED)
 BEGIN
     DECLARE v_direct_lock INT DEFAULT 0;
@@ -2016,32 +1589,29 @@ BEGIN
     DELETE FROM evav_lock
      WHERE locked_evav_id = p_evav_id
        AND locking_evav_id IS NULL;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS list_commits$$
 CREATE PROCEDURE list_commits()
 BEGIN
     -- Query Dolt’s log view; adjust columns if needed.
     SELECT commit_hash, message, date
     FROM dolt_log
     ORDER BY date DESC;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS create_commit$$
 CREATE PROCEDURE create_commit(
     IN in_commit_message VARCHAR(255)
 )
 BEGIN
     CALL DOLT_COMMIT(in_commit_message);
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS list_entities_of_commit$$
 CREATE PROCEDURE list_entities_of_commit(
     IN in_commit_hash CHAR(32)
 )
@@ -2049,22 +1619,20 @@ BEGIN
     SELECT *
     FROM entity
     WHERE commit_hash = in_commit_hash;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS add_variant$$
 CREATE PROCEDURE add_variant(
     IN in_variant_name VARCHAR(255)
 )
 BEGIN
     INSERT INTO variant (name)
     VALUES (in_variant_name);
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS modify_variant$$
 CREATE PROCEDURE modify_variant(
     IN in_variant_id INT,
     IN in_variant_name VARCHAR(255)
@@ -2073,32 +1641,29 @@ BEGIN
     UPDATE variant
     SET name = in_variant_name
     WHERE id = in_variant_id;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS delete_variant$$
 CREATE PROCEDURE delete_variant(
     IN in_variant_id INT
 )
 BEGIN
     DELETE FROM variant
     WHERE id = in_variant_id;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS list_variants$$
 CREATE PROCEDURE list_variants()
 BEGIN
     SELECT *
     FROM variant
     ORDER BY name;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS add_attribute$$
 CREATE PROCEDURE add_attribute(
     IN in_name VARCHAR(255),
     IN in_type ENUM('discrete','continuous'),
@@ -2119,11 +1684,10 @@ BEGIN
     VALUES
       (in_name, in_type, in_decimals, in_has_labels, in_has_value, in_max_value,
        in_min_value, in_normal_value, in_percent_normal, in_percent_skewed, in_units);
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS modify_attribute$$
 CREATE PROCEDURE modify_attribute(
     IN in_id INT,
     IN in_name VARCHAR(255),
@@ -2152,32 +1716,29 @@ BEGIN
         percent_skewed = in_percent_skewed,
         units = in_units
     WHERE id = in_id;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS delete_attribute$$
 CREATE PROCEDURE delete_attribute(
     IN in_id INT
 )
 BEGIN
     DELETE FROM attribute
     WHERE id = in_id;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS list_attributes$$
 CREATE PROCEDURE list_attributes()
 BEGIN
     SELECT *
     FROM attribute
     ORDER BY name;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS add_entity$$
 CREATE PROCEDURE add_entity(
     IN in_variant_id INT,
     IN in_commit_hash CHAR(32)
@@ -2185,11 +1746,10 @@ CREATE PROCEDURE add_entity(
 BEGIN
     INSERT INTO entity (variant_id, commit_hash)
     VALUES (in_variant_id, in_commit_hash);
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS modify_entity$$
 CREATE PROCEDURE modify_entity(
     IN in_entity_id INT,
     IN in_variant_id INT,
@@ -2200,32 +1760,29 @@ BEGIN
     SET variant_id = in_variant_id,
         commit_hash = in_commit_hash
     WHERE id = in_entity_id;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS delete_entity$$
 CREATE PROCEDURE delete_entity(
     IN in_entity_id INT
 )
 BEGIN
     DELETE FROM entity
     WHERE id = in_entity_id;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS list_entities$$
 CREATE PROCEDURE list_entities()
 BEGIN
     SELECT DISTINCT v.*
     FROM variant v
     JOIN entity e ON v.id = e.variant_id;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS resolve_entity_state$$
 CREATE PROCEDURE resolve_entity_state(
   IN in_entity_state_id INT
 )
@@ -2259,22 +1816,20 @@ BEGIN
     LEFT JOIN evav_lock l1 ON l1.locked_evav_id = evav.id
     LEFT JOIN evav_lock l2 ON l2.locking_evav_id = evav.id
   WHERE es.id = in_entity_state_id;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS delete_entity_state$$
 CREATE PROCEDURE delete_entity_state(
   IN in_entity_state_id INT
 )
 BEGIN
   DELETE FROM entity_state
   WHERE id = in_entity_state_id;
-END $$
-DELIMITER ;
+END$$
 
 
-DELIMITER $$
+DROP PROCEDURE IF EXISTS list_entity_states$$
 CREATE PROCEDURE list_entity_states(
   IN in_entity_id INT
 )
@@ -2283,17 +1838,7 @@ BEGIN
   FROM entity_state es
   WHERE es.entity_id = in_entity_id
   ORDER BY es.time;
-END $$
+END$$
+
+
 DELIMITER ;
-
-
-
-
-
-
-
-
-
-
-
-
