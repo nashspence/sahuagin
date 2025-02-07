@@ -168,68 +168,127 @@ proc_begin: BEGIN
   DECLARE v_totalWeight   DOUBLE DEFAULT 0;
   DECLARE v_randomPick    DOUBLE DEFAULT 0;
   DECLARE v_span_id       INT UNSIGNED DEFAULT NULL;
-  
-  -- Build _OrderedSpans with candidate spans and cumulative weights
+  DECLARE v_spanCount     INT DEFAULT 0;
+
+  -- Log the input parameters.
+  INSERT INTO debug_log (procedure_name, log_message)
+    VALUES ('roll_discrete_varattr',
+            CONCAT('START: p_variantAttributeId=', p_variantAttributeId,
+                   ', p_variantAttrVariantSpanId=', p_variantAttrVariantSpanId,
+                   ', p_excludeSpanId=', p_excludeSpanId));
+
+  -- Build _OrderedSpans with candidate spans and cumulative weights.
   DROP TEMPORARY TABLE IF EXISTS _OrderedSpans;
   
   CREATE TEMPORARY TABLE _OrderedSpans AS
   WITH BaseSpans AS (
-    SELECT s.id AS span_id, va.id AS variant_attribute_id, vas.id AS variant_attr_span_id, s.weight AS base_weight
+    SELECT 
+      s.id AS span_id, 
+      va.id AS variant_attribute_id, 
+      vas.id AS variant_attr_span_id, 
+      s.weight AS base_weight
     FROM variant_attribute va
     JOIN span s ON s.attribute_id = va.attribute_id
-    LEFT JOIN variant_attr_span vas ON vas.variant_attribute_id = va.id AND vas.span_id = s.id
-    WHERE va.id = p_variantAttributeId AND s.type = 'discrete'
+    LEFT JOIN variant_attr_span vas 
+      ON vas.variant_attribute_id = va.id 
+      AND vas.span_id = s.id
+    WHERE va.id = p_variantAttributeId 
+      AND s.type = 'discrete'
       AND (p_excludeSpanId = 0 OR s.id <> p_excludeSpanId)
-      AND s.id IN (
-        SELECT s2.id FROM span s2
-        JOIN variant_attr_span vas2 ON vas2.span_id = s2.id AND vas2.variant_attribute_id = va.id
-        WHERE vas2.id = p_variantAttrVariantSpanId
-      )
   ), ActiveVariations AS (
-    SELECT v.id AS variation_id, vav.variant_attribute_id
+    SELECT 
+      v.id AS variation_id, 
+      vav.variant_attribute_id
     FROM variation v
-    JOIN vavspan_attr vav ON vav.id = v.to_modify_vavspan_attr_id AND vav.variant_attribute_id = p_variantAttributeId
+    JOIN vavspan_attr vav 
+      ON vav.id = v.to_modify_vavspan_attr_id 
+     AND vav.variant_attribute_id = p_variantAttributeId
     WHERE v.is_inactive = 0
   ), InactiveSpans AS (
     SELECT DISTINCT vis.span_id
     FROM variation_inactive_span vis
-    JOIN ActiveVariations av ON av.variation_id = vis.variation_id
+    JOIN ActiveVariations av 
+      ON av.variation_id = vis.variation_id
   ), ActivatedSpans AS (
-    SELECT DISTINCT vas.span_id, av.variant_attribute_id, NULL AS variant_attr_span_id, 0.0 AS base_weight
+    SELECT DISTINCT 
+      vas.span_id, 
+      av.variant_attribute_id, 
+      NULL AS variant_attr_span_id, 
+      0.0 AS base_weight
     FROM variation_activated_span vas
-    JOIN ActiveVariations av ON av.variation_id = vas.variation_id
+    JOIN ActiveVariations av 
+      ON av.variation_id = vas.variation_id
   ), DeltaWeights AS (
-    SELECT vdw.span_id, SUM(vdw.delta_weight) AS total_delta
+    SELECT 
+      vdw.span_id, 
+      SUM(vdw.delta_weight) AS total_delta
     FROM variation_delta_weight vdw
-    JOIN ActiveVariations av ON av.variation_id = vdw.variation_id
+    JOIN ActiveVariations av 
+      ON av.variation_id = vdw.variation_id
     GROUP BY vdw.span_id
   ), AllRelevantSpans AS (
-    SELECT b.span_id, b.variant_attribute_id, b.variant_attr_span_id, b.base_weight
+    SELECT 
+      b.span_id, 
+      b.variant_attribute_id, 
+      b.variant_attr_span_id, 
+      b.base_weight
     FROM BaseSpans b
     WHERE b.span_id NOT IN (SELECT span_id FROM InactiveSpans)
     UNION
-    SELECT a.span_id, a.variant_attribute_id, a.variant_attr_span_id, a.base_weight
+    SELECT 
+      a.span_id, 
+      a.variant_attribute_id, 
+      a.variant_attr_span_id, 
+      a.base_weight
     FROM ActivatedSpans a
     WHERE a.span_id NOT IN (SELECT span_id FROM InactiveSpans)
   ), FinalSpans AS (
-    SELECT ars.span_id, ars.variant_attribute_id, ars.variant_attr_span_id,
-           COALESCE(ars.base_weight,0) + COALESCE(dw.total_delta,0) AS effective_weight
+    SELECT 
+      ars.span_id, 
+      ars.variant_attribute_id, 
+      ars.variant_attr_span_id,
+      COALESCE(ars.base_weight, 0) + COALESCE(dw.total_delta, 0) AS effective_weight
     FROM AllRelevantSpans ars
-    LEFT JOIN DeltaWeights dw ON dw.span_id = ars.span_id
-  ), OrderedSpans AS (
-    SELECT fs.span_id, fs.variant_attribute_id, fs.variant_attr_span_id, fs.effective_weight AS contextualWeight,
-           SUM(fs.effective_weight) OVER (ORDER BY fs.span_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS runningTotal,
-           LAG(SUM(fs.effective_weight) OVER (ORDER BY fs.span_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), 1, 0)
-             OVER (ORDER BY fs.span_id) AS prevRunningTotal
+    LEFT JOIN DeltaWeights dw 
+      ON dw.span_id = ars.span_id
+  ), OrderedSpansCTE AS (
+    SELECT 
+      fs.span_id,
+      fs.variant_attribute_id,
+      fs.variant_attr_span_id,
+      fs.effective_weight AS contextualWeight,
+      SUM(fs.effective_weight) OVER (
+        ORDER BY fs.span_id 
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+      ) AS runningTotal
     FROM FinalSpans fs
     WHERE fs.effective_weight > 0
     ORDER BY fs.span_id
   )
-  SELECT * FROM OrderedSpans;
+  SELECT
+    span_id,
+    variant_attribute_id,
+    variant_attr_span_id,
+    contextualWeight,
+    runningTotal,
+    COALESCE(LAG(runningTotal) OVER (ORDER BY span_id), 0) AS prevRunningTotal
+  FROM OrderedSpansCTE;
   
+  -- Log the number of rows created.
+  SELECT COUNT(*) INTO v_spanCount FROM _OrderedSpans;
+  INSERT INTO debug_log (procedure_name, log_message)
+    VALUES ('roll_discrete_varattr',
+            CONCAT('_OrderedSpans row count = ', v_spanCount));
+
   -- Get total cumulative weight; if 0, return NULL.
   SELECT COALESCE(MAX(runningTotal), 0) INTO v_totalWeight FROM _OrderedSpans;
+  INSERT INTO debug_log (procedure_name, log_message)
+    VALUES ('roll_discrete_varattr',
+            CONCAT('v_totalWeight = ', v_totalWeight));
+
   IF v_totalWeight <= 0 THEN
+    INSERT INTO debug_log (procedure_name, log_message)
+      VALUES ('roll_discrete_varattr','v_totalWeight<=0; exiting procedure.');
     DROP TEMPORARY TABLE IF EXISTS _OrderedSpans;
     SELECT NULL AS selected_span_id;
     LEAVE proc_begin;
@@ -237,12 +296,22 @@ proc_begin: BEGIN
   
   -- Roll a random number and select the span where it lands.
   SET v_randomPick = FLOOR(RAND() * v_totalWeight);
-  SELECT span_id INTO v_span_id FROM _OrderedSpans
-    WHERE v_randomPick >= prevRunningTotal AND v_randomPick < runningTotal
-    LIMIT 1;
+  INSERT INTO debug_log (procedure_name, log_message)
+    VALUES ('roll_discrete_varattr',
+            CONCAT('v_randomPick = ', v_randomPick));
+  
+  SELECT span_id INTO v_span_id 
+  FROM _OrderedSpans
+  WHERE v_randomPick >= prevRunningTotal
+    AND v_randomPick < runningTotal
+  LIMIT 1;
+  
+  INSERT INTO debug_log (procedure_name, log_message)
+    VALUES ('roll_discrete_varattr',
+            CONCAT('Chosen span_id = ', IFNULL(v_span_id, 'NULL')));
   
   DROP TEMPORARY TABLE IF EXISTS _OrderedSpans;
-  SELECT v_span_id AS selected_span_id;
+  SET @span_id = v_span_id;
 END proc_begin$$
 
 
@@ -398,8 +467,9 @@ roll_cont_proc: BEGIN
         HAVING eff_min <= v_clampedResult AND eff_max > v_clampedResult
          LIMIT 1;
     END IF;
-    
-    SELECT v_chosenSpanId AS span_id, v_clampedResult AS chosen_value;
+  
+    SET @span_id = v_chosenSpanId;
+    SET @chosen_value = v_clampedResult;
 END roll_cont_proc;
 
 
@@ -410,23 +480,27 @@ CREATE PROCEDURE generate_entity_state(
     IN  p_regenerate_entity_state_id   INT UNSIGNED
 )
 BEGIN
-    -- Label the main block so we can exit early on error.
+    -- All DECLARE statements must come first!
+    DECLARE v_root_variant_id         INT UNSIGNED;
+    DECLARE v_entity_state_id         INT UNSIGNED;
+    DECLARE v_current_variant         INT UNSIGNED;
+    DECLARE cur_va_id                 INT UNSIGNED;
+    DECLARE cur_attr_type             ENUM('discrete','continuous');
+    DECLARE v_variantAttrVariantSpanId INT UNSIGNED;
+    DECLARE v_existing_evav_id        INT UNSIGNED DEFAULT NULL;
+    DECLARE v_existing_span_id        INT UNSIGNED DEFAULT NULL;
+    DECLARE v_lock_count              INT DEFAULT 0;
+    DECLARE v_new_span_id             INT UNSIGNED;
+    DECLARE v_new_numeric             DOUBLE;
+    DECLARE v_used_span_id            INT UNSIGNED;
+    DECLARE v_sub_variant_id          INT UNSIGNED;
+    DECLARE done                      INT DEFAULT FALSE;
+    DECLARE va_cursor CURSOR FOR
+        SELECT va_id, attr_type FROM _VariantAttributes;
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
+    
+    -- Label the main block.
     generate_entity_state_proc: BEGIN
-        DECLARE v_root_variant_id         INT UNSIGNED;
-        DECLARE v_entity_state_id         INT UNSIGNED;
-        DECLARE v_current_variant         INT UNSIGNED;
-        DECLARE cur_va_id                 INT UNSIGNED;
-        DECLARE cur_attr_type             ENUM('discrete','continuous');
-        DECLARE v_variantAttrVariantSpanId INT UNSIGNED;
-        DECLARE v_existing_evav_id        INT UNSIGNED DEFAULT NULL;
-        DECLARE v_existing_span_id        INT UNSIGNED DEFAULT NULL;
-        DECLARE v_lock_count              INT DEFAULT 0;
-        DECLARE v_new_span_id             INT UNSIGNED;
-        DECLARE v_new_numeric             DOUBLE;
-        DECLARE v_used_span_id            INT UNSIGNED;
-        DECLARE v_sub_variant_id          INT UNSIGNED;
-        DECLARE done                      INT DEFAULT FALSE;
-
         -- 0) Get the root variant.
         SELECT variant_id 
           INTO v_root_variant_id 
@@ -435,6 +509,8 @@ BEGIN
          LIMIT 1;
 
         IF v_root_variant_id IS NULL THEN
+           INSERT INTO debug_log (procedure_name, log_message)
+             VALUES ('generate_entity_state', CONCAT('No entity found with id=', p_entity_id));
            SELECT CONCAT('No entity found with id=', p_entity_id) AS error_message;
            LEAVE generate_entity_state_proc;
         END IF;
@@ -462,10 +538,6 @@ BEGIN
             attr_type ENUM('discrete','continuous')
         ) ENGINE=MEMORY;
 
-        DECLARE va_cursor CURSOR FOR
-            SELECT va_id, attr_type FROM _VariantAttributes;
-        DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
-
         WHILE (SELECT COUNT(*) FROM _VariantQueue) > 0 DO
             -- 3A) Pop one variant from the queue.
             SELECT variant_id INTO v_current_variant FROM _VariantQueue LIMIT 1;
@@ -484,7 +556,9 @@ BEGIN
             OPEN va_cursor;
             read_loop: LOOP
                 FETCH va_cursor INTO cur_va_id, cur_attr_type;
-                IF done THEN LEAVE read_loop; END IF;
+                IF done THEN 
+                    LEAVE read_loop; 
+                END IF;
 
                 SELECT id 
                   INTO v_variantAttrVariantSpanId
@@ -505,7 +579,8 @@ BEGIN
                     SET v_existing_span_id = NULL;
                 END IF;
 
-                IF p_regenerate_entity_state_id IS NOT NULL AND v_existing_evav_id IS NOT NULL THEN
+                IF p_regenerate_entity_state_id IS NOT NULL 
+                   AND v_existing_evav_id IS NOT NULL THEN
                     SELECT COUNT(*) 
                       INTO v_lock_count 
                       FROM evav_lock
@@ -514,8 +589,15 @@ BEGIN
                         SET v_used_span_id = v_existing_span_id;
                     ELSE
                         IF cur_attr_type = 'discrete' THEN
+                            INSERT INTO debug_log (procedure_name, log_message)
+                              VALUES ('generate_entity_state',
+                                      CONCAT('[EXISTING] Discrete: va_id=', cur_va_id,
+                                             ', calling roll_discrete_varattr with v_variantAttrVariantSpanId=', v_variantAttrVariantSpanId));
                             CALL roll_discrete_varattr(cur_va_id, v_variantAttrVariantSpanId, 0);
                             SELECT @span_id INTO v_new_span_id;
+                            INSERT INTO debug_log (procedure_name, log_message)
+                              VALUES ('generate_entity_state',
+                                      CONCAT('roll_discrete_varattr returned span id=', IFNULL(v_new_span_id, 'NULL')));
                             UPDATE entity_varattr_value
                                SET span_id = v_new_span_id
                              WHERE id = v_existing_evav_id;
@@ -531,8 +613,15 @@ BEGIN
                     END IF;
                 ELSE
                     IF cur_attr_type = 'discrete' THEN
+                        INSERT INTO debug_log (procedure_name, log_message)
+                          VALUES ('generate_entity_state',
+                                  CONCAT('[NEW] Discrete: va_id=', cur_va_id,
+                                         ', calling roll_discrete_varattr with v_variantAttrVariantSpanId=', v_variantAttrVariantSpanId));
                         CALL roll_discrete_varattr(cur_va_id, v_variantAttrVariantSpanId, 0);
                         SELECT @span_id INTO v_new_span_id;
+                        INSERT INTO debug_log (procedure_name, log_message)
+                          VALUES ('generate_entity_state',
+                                  CONCAT('roll_discrete_varattr returned span id=', IFNULL(v_new_span_id, 'NULL')));
                         INSERT INTO entity_varattr_value (
                             entity_state_id,
                             numeric_value,
@@ -876,15 +965,16 @@ CREATE PROCEDURE add_discrete_span(
     IN p_attribute_id INT UNSIGNED,
     IN p_label VARCHAR(255)
 )
-BEGIN
-  DECLARE v_total_weight INT;
-  DECLARE v_unpinned_weight INT;
-  DECLARE v_count_unpinned INT;
-  DECLARE v_min_unpinned_weight INT;
-  DECLARE v_scale_factor DOUBLE;
-  DECLARE v_new_span_weight INT;
-  DECLARE v_new_total INT;
-  DECLARE v_diff INT;
+proc: BEGIN
+  DECLARE v_total_weight INT DEFAULT 0;
+  DECLARE v_unpinned_weight INT DEFAULT 0;
+  DECLARE v_count_unpinned INT DEFAULT 0;
+  DECLARE v_min_unpinned_weight INT DEFAULT 0;
+  DECLARE v_scale_factor DOUBLE DEFAULT 0;
+  DECLARE v_new_span_weight INT DEFAULT 0;
+  DECLARE v_new_total INT DEFAULT 0;
+  DECLARE v_diff INT DEFAULT 0;
+  DECLARE v_old_span_new_weight INT DEFAULT 0;
 
   -- Get the overall total weight of discrete spans for the attribute.
   SELECT COALESCE(SUM(weight), 0)
@@ -893,9 +983,11 @@ BEGIN
   WHERE attribute_id = p_attribute_id
     AND type = 'discrete';
 
+  -- If no discrete spans exist yet, insert the first one with full weight.
   IF v_total_weight = 0 THEN
-    ROLLBACK;
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'No discrete spans exist for attribute.';
+    INSERT INTO span(attribute_id, label, type, is_percentage_pinned, weight)
+         VALUES(p_attribute_id, p_label, 'discrete', 0, 100);
+    LEAVE proc;
   END IF;
 
   -- Get the sum and count for unpinned discrete spans.
@@ -907,10 +999,31 @@ BEGIN
     AND is_percentage_pinned = 0;
 
   IF v_count_unpinned = 0 THEN
-    ROLLBACK;
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'No unpinned discrete spans available for adjustment.';
+    SIGNAL SQLSTATE '45000'
+           SET MESSAGE_TEXT = 'No unpinned discrete spans available for adjustment.';
   END IF;
 
+  -- Special handling when only one unpinned span exists.
+  IF v_count_unpinned = 1 THEN
+    -- For a single span, split its weight in half.
+    SET v_new_span_weight = ROUND(v_unpinned_weight / 2);
+    SET v_old_span_new_weight = v_unpinned_weight - v_new_span_weight;
+    
+    -- Update the existing unpinned span with its new (reduced) weight.
+    UPDATE span
+      SET weight = v_old_span_new_weight
+    WHERE attribute_id = p_attribute_id
+      AND type = 'discrete'
+      AND is_percentage_pinned = 0;
+
+    -- Insert the new span with the other half.
+    INSERT INTO span(attribute_id, label, type, is_percentage_pinned, weight)
+         VALUES(p_attribute_id, p_label, 'discrete', 0, v_new_span_weight);
+
+    LEAVE proc;
+  END IF;
+
+  -- Normal operation when more than one unpinned span exists.
   -- Find the minimum weight among unpinned spans.
   SELECT MIN(weight)
     INTO v_min_unpinned_weight
@@ -950,7 +1063,7 @@ BEGIN
     AND label = p_label
     ORDER BY id DESC
     LIMIT 1;
-END$$
+END proc$$
 
 
 DROP PROCEDURE IF EXISTS remove_discrete_span$$
@@ -1040,85 +1153,86 @@ CREATE PROCEDURE add_continuous_span(
     IN p_new_max DOUBLE
 )
 BEGIN
-    DECLARE v_attr_min, v_attr_max DOUBLE;
-    DECLARE v_count INT;
-    DECLARE v_first_id, v_last_id INT;
-    DECLARE v_first_min, v_first_max DOUBLE;
-    DECLARE v_last_min, v_last_max DOUBLE;
-    
-    -- Get attribute’s overall range (only continuous allowed)
-    SELECT min_value, max_value
-      INTO v_attr_min, v_attr_max
-      FROM attribute
-     WHERE id = p_attribute_id
-       AND type = 'continuous'
-     LIMIT 1;
-    
-    IF v_attr_min IS NULL THEN
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Attribute not found or not continuous';
-    END IF;
-    
-    -- Validate requested span
-    IF p_new_min < v_attr_min OR p_new_max > v_attr_max OR p_new_min >= p_new_max THEN
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Invalid span range';
-    END IF;
-    
-    -- If no continuous spans exist, insert one covering the full range
-    SELECT COUNT(*) INTO v_count
-      FROM span
-     WHERE attribute_id = p_attribute_id
-       AND type = 'continuous';
-    
-    IF v_count = 0 THEN
+    proc: BEGIN
+        DECLARE v_attr_min, v_attr_max DOUBLE;
+        DECLARE v_count INT;
+        DECLARE v_first_id, v_last_id INT;
+        DECLARE v_first_min, v_first_max DOUBLE;
+        DECLARE v_last_min, v_last_max DOUBLE;
+        
+        -- Get attribute’s overall range (only continuous allowed)
+        SELECT min_value, max_value
+          INTO v_attr_min, v_attr_max
+          FROM attribute
+         WHERE id = p_attribute_id
+           AND type = 'continuous'
+         LIMIT 1;
+        
+        IF v_attr_min IS NULL THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Attribute not found or not continuous';
+        END IF;
+        
+        -- Validate requested span
+        IF p_new_min < v_attr_min OR p_new_max > v_attr_max OR p_new_min >= p_new_max THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Invalid span range';
+        END IF;
+        
+        -- If no continuous spans exist, insert one covering the full range
+        SELECT COUNT(*) INTO v_count
+          FROM span
+         WHERE attribute_id = p_attribute_id
+           AND type = 'continuous';
+        
+        IF v_count = 0 THEN
+            INSERT INTO span(attribute_id, label, type, min_value, max_value)
+            VALUES(p_attribute_id, p_label, 'continuous', v_attr_min, v_attr_max);
+            SELECT 'Continuous span inserted covering full range' AS message;
+            LEAVE proc;
+        END IF;
+        
+        -- Adjust overlapping spans: find first overlapping span (ordered by min_value)
+        SELECT id, min_value, max_value
+          INTO v_first_id, v_first_min, v_first_max
+          FROM span
+         WHERE attribute_id = p_attribute_id
+           AND type = 'continuous'
+           AND max_value > p_new_min
+           AND min_value < p_new_max
+         ORDER BY min_value ASC
+         LIMIT 1;
+        
+        IF v_first_min < p_new_min THEN
+            UPDATE span SET max_value = p_new_min WHERE id = v_first_id;
+        END IF;
+        
+        -- Find last overlapping span (ordered by max_value)
+        SELECT id, min_value, max_value
+          INTO v_last_id, v_last_min, v_last_max
+          FROM span
+         WHERE attribute_id = p_attribute_id
+           AND type = 'continuous'
+           AND max_value > p_new_min
+           AND min_value < p_new_max
+         ORDER BY max_value DESC
+         LIMIT 1;
+        
+        IF v_last_max > p_new_max THEN
+            UPDATE span SET min_value = p_new_max WHERE id = v_last_id;
+        END IF;
+        
+        -- Remove any spans entirely covered by the new span
+        DELETE FROM span
+         WHERE attribute_id = p_attribute_id
+           AND type = 'continuous'
+           AND min_value >= p_new_min
+           AND max_value <= p_new_max;
+        
+        -- Insert the new span
         INSERT INTO span(attribute_id, label, type, min_value, max_value)
-        VALUES(p_attribute_id, p_label, 'continuous', v_attr_min, v_attr_max);
-        SELECT 'Continuous span inserted covering full range' AS message;
-        LEAVE proc_end;
-    END IF;
-    
-    -- Adjust overlapping spans: find first overlapping span (ordered by min_value)
-    SELECT id, min_value, max_value
-      INTO v_first_id, v_first_min, v_first_max
-      FROM span
-     WHERE attribute_id = p_attribute_id
-       AND type = 'continuous'
-       AND max_value > p_new_min
-       AND min_value < p_new_max
-     ORDER BY min_value ASC
-     LIMIT 1;
-    
-    IF v_first_min < p_new_min THEN
-        UPDATE span SET max_value = p_new_min WHERE id = v_first_id;
-    END IF;
-    
-    -- Find last overlapping span (ordered by max_value)
-    SELECT id, min_value, max_value
-      INTO v_last_id, v_last_min, v_last_max
-      FROM span
-     WHERE attribute_id = p_attribute_id
-       AND type = 'continuous'
-       AND max_value > p_new_min
-       AND min_value < p_new_max
-     ORDER BY max_value DESC
-     LIMIT 1;
-    
-    IF v_last_max > p_new_max THEN
-        UPDATE span SET min_value = p_new_max WHERE id = v_last_id;
-    END IF;
-    
-    -- Remove any spans entirely covered by the new span
-    DELETE FROM span
-     WHERE attribute_id = p_attribute_id
-       AND type = 'continuous'
-       AND min_value >= p_new_min
-       AND max_value <= p_new_max;
-    
-    -- Insert the new span
-    INSERT INTO span(attribute_id, label, type, min_value, max_value)
-    VALUES(p_attribute_id, p_label, 'continuous', p_new_min, p_new_max);
-    
-proc_end: 
-    SELECT 'Continuous span added successfully' AS message;
+        VALUES(p_attribute_id, p_label, 'continuous', p_new_min, p_new_max);
+        
+        SELECT 'Continuous span added successfully' AS message;
+    END;
 END$$
 
 
@@ -1519,8 +1633,20 @@ END$$
 DROP PROCEDURE IF EXISTS lock_entity_varattr_value$$
 CREATE PROCEDURE lock_entity_varattr_value(IN p_evav_id INT UNSIGNED)
 BEGIN
-  WITH RECURSIVE dependency_chain (evav_id, entity_state_id, variant_attribute_id, span_id, locking_evav_id) AS (
-    -- Base: start with the given EVAV.
+    -- Declare a variable to track the number of rows inserted in each loop iteration.
+    DECLARE rows_inserted INT DEFAULT 0;
+
+    -- Create a temporary table to store the dependency chain.
+    CREATE TEMPORARY TABLE tmp_dependency_chain (
+        evav_id INT UNSIGNED PRIMARY KEY,
+        entity_state_id INT UNSIGNED,
+        variant_attribute_id INT UNSIGNED,
+        span_id INT UNSIGNED,
+        locking_evav_id INT UNSIGNED
+    ) ENGINE=MEMORY;
+
+    -- Insert the base record (the starting EVAV).
+    INSERT INTO tmp_dependency_chain (evav_id, entity_state_id, variant_attribute_id, span_id, locking_evav_id)
     SELECT
       evav.id,
       evav.entity_state_id,
@@ -1528,40 +1654,52 @@ BEGIN
       evav.span_id,
       NULL
     FROM entity_varattr_value evav
-    WHERE evav.id = p_evav_id
+    WHERE evav.id = p_evav_id;
 
-    UNION ALL
+    SET rows_inserted = ROW_COUNT();
 
-    -- Recursive: for each EVAV, join its dependency record to find its parent EVAV.
-    SELECT
-      parent_evav.id,
-      parent_evav.entity_state_id,
-      parent_evav.variant_attribute_id,
-      parent_evav.span_id,
-      child.evav_id
-    FROM dependency_chain AS child
-      JOIN vavspan_attr AS vva
-        ON vva.variant_attribute_id = child.variant_attribute_id
-      JOIN variant_attr_span AS vas
-        ON vas.id = vva.variant_attr_span_id
-      JOIN entity_varattr_value AS parent_evav
-        ON parent_evav.entity_state_id    = child.entity_state_id
-       AND parent_evav.variant_attribute_id = vas.variant_attribute_id
-       AND parent_evav.span_id            = vas.span_id
-  )
-  INSERT INTO evav_lock (locked_evav_id, locking_evav_id)
-  SELECT d.evav_id, d.locking_evav_id
-  FROM (
-    SELECT DISTINCT evav_id, locking_evav_id
-    FROM dependency_chain
-  ) AS d
-  LEFT JOIN evav_lock AS l
-    ON l.locked_evav_id = d.evav_id
-   AND (
-         (d.locking_evav_id IS NULL AND l.locking_evav_id IS NULL)
-      OR (d.locking_evav_id IS NOT NULL AND l.locking_evav_id = d.locking_evav_id)
-       )
-  WHERE l.id IS NULL;
+    -- Loop to simulate recursive expansion.
+    WHILE rows_inserted > 0 DO
+        INSERT IGNORE INTO tmp_dependency_chain (evav_id, entity_state_id, variant_attribute_id, span_id, locking_evav_id)
+        SELECT
+          parent_evav.id,
+          parent_evav.entity_state_id,
+          parent_evav.variant_attribute_id,
+          parent_evav.span_id,
+          child.evav_id
+        FROM tmp_dependency_chain AS child
+          JOIN vavspan_attr AS vva
+            ON vva.variant_attribute_id = child.variant_attribute_id
+          JOIN variant_attr_span AS vas
+            ON vas.id = vva.variant_attr_span_id
+          JOIN entity_varattr_value AS parent_evav
+            ON parent_evav.entity_state_id = child.entity_state_id
+           AND parent_evav.variant_attribute_id = vas.variant_attribute_id
+           AND parent_evav.span_id = vas.span_id
+        WHERE NOT EXISTS (
+            SELECT 1 FROM tmp_dependency_chain WHERE evav_id = parent_evav.id
+        );
+        
+        SET rows_inserted = ROW_COUNT();
+    END WHILE;
+
+    -- Now, insert the collected dependency chain into evav_lock.
+    INSERT INTO evav_lock (locked_evav_id, locking_evav_id)
+    SELECT d.evav_id, d.locking_evav_id
+    FROM (
+      SELECT DISTINCT evav_id, locking_evav_id
+      FROM tmp_dependency_chain
+    ) AS d
+    LEFT JOIN evav_lock AS l
+      ON l.locked_evav_id = d.evav_id
+     AND (
+           (d.locking_evav_id IS NULL AND l.locking_evav_id IS NULL)
+        OR (d.locking_evav_id IS NOT NULL AND l.locking_evav_id = d.locking_evav_id)
+         )
+    WHERE l.id IS NULL;
+
+    -- Drop the temporary table.
+    DROP TEMPORARY TABLE tmp_dependency_chain;
 END$$
 
 
@@ -1589,36 +1727,6 @@ BEGIN
     DELETE FROM evav_lock
      WHERE locked_evav_id = p_evav_id
        AND locking_evav_id IS NULL;
-END$$
-
-
-DROP PROCEDURE IF EXISTS list_commits$$
-CREATE PROCEDURE list_commits()
-BEGIN
-    -- Query Dolt’s log view; adjust columns if needed.
-    SELECT commit_hash, message, date
-    FROM dolt_log
-    ORDER BY date DESC;
-END$$
-
-
-DROP PROCEDURE IF EXISTS create_commit$$
-CREATE PROCEDURE create_commit(
-    IN in_commit_message VARCHAR(255)
-)
-BEGIN
-    CALL DOLT_COMMIT(in_commit_message);
-END$$
-
-
-DROP PROCEDURE IF EXISTS list_entities_of_commit$$
-CREATE PROCEDURE list_entities_of_commit(
-    IN in_commit_hash CHAR(32)
-)
-BEGIN
-    SELECT *
-    FROM entity
-    WHERE commit_hash = in_commit_hash;
 END$$
 
 
@@ -1740,25 +1848,25 @@ END$$
 
 DROP PROCEDURE IF EXISTS add_entity$$
 CREATE PROCEDURE add_entity(
-    IN in_variant_id INT,
-    IN in_commit_hash CHAR(32)
+    IN in_name VARCHAR(255),
+    IN in_variant_id INT
 )
 BEGIN
-    INSERT INTO entity (variant_id, commit_hash)
-    VALUES (in_variant_id, in_commit_hash);
+    INSERT INTO entity (name, variant_id)
+    VALUES (in_name, in_variant_id);
 END$$
 
 
 DROP PROCEDURE IF EXISTS modify_entity$$
 CREATE PROCEDURE modify_entity(
     IN in_entity_id INT,
-    IN in_variant_id INT,
-    IN in_commit_hash CHAR(32)
+    IN in_name VARCHAR(255),
+    IN in_variant_id INT
 )
 BEGIN
     UPDATE entity
-    SET variant_id = in_variant_id,
-        commit_hash = in_commit_hash
+    SET name = in_name,
+        variant_id = in_variant_id
     WHERE id = in_entity_id;
 END$$
 
@@ -1790,7 +1898,6 @@ BEGIN
   SELECT 
     e.id AS entity_id,
     v.name AS variant_name,
-    e.commit_hash,
     es.id AS entity_state_id,
     es.time,
     evav.id AS evav_id,

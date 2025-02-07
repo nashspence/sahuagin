@@ -1,13 +1,13 @@
 services:
-  dolt:
-    container_name: dolt
+  mariadb:
+    container_name: mariadb
     environment:
-      - DOLT_ROOT_HOST=%
-      - DOLT_ROOT_PASSWORD=test
+      - MARIADB_ROOT_HOST=%
+      - MARIADB_ROOT_PASSWORD=test
       - TZ=America/Los_Angeles
     ports:
       - "3306:3306"
-    image: dolthub/dolt-sql-server:latest
+    image: mariadb:latest
     restart: unless-stopped
     volumes:
-      - ./bind-mounts/dolt:/var/lib/dolt
+      - ./bind-mounts/mariadb:/var/lib/mysql

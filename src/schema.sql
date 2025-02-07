@@ -1,4 +1,4 @@
-DROP DATABASE sahuagin;
+DROP DATABASE IF EXISTS sahuagin;
 CREATE DATABASE sahuagin;
 USE sahuagin;
 
@@ -177,7 +177,7 @@ CREATE TABLE `variation_inactive_span` (
 CREATE TABLE `entity` (
     `id` INT UNSIGNED AUTO_INCREMENT,
     `variant_id` INT UNSIGNED NOT NULL,
-    `commit_hash` CHAR(32) NOT NULL,
+    `name` VARCHAR(255) NOT NULL,
     PRIMARY KEY (`id`),
     CONSTRAINT `fk_entity_variant` FOREIGN KEY (`variant_id`)
         REFERENCES `variant` (`id`)
@@ -221,6 +221,12 @@ CREATE TABLE `evav_lock` (
         REFERENCES `entity_varattr_value` (`id`)
         ON DELETE CASCADE
 ); -- short for entity_variant_attribute_value_lock
+CREATE TABLE `debug_log` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `log_time` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    `procedure_name` VARCHAR(255),
+    `log_message` TEXT
+);
 
 
 CREATE INDEX idx_attribute_name ON attribute(name);
@@ -248,7 +254,6 @@ CREATE INDEX idx_variation_delta_weight_varid_spanid ON variation_delta_weight(v
 CREATE INDEX idx_variation_delta ON variation_delta_weight(variation_id, span_id, delta_weight);
 CREATE INDEX idx_variation_is_inactive ON variation(is_inactive, id);
 CREATE INDEX idx_variation_to_modify_inactive ON variation(to_modify_vavspan_attr_id, is_inactive);
-CREATE INDEX idx_entity_commithash ON entity(commit_hash);
 CREATE INDEX idx_entity_state_entity_id ON entity_state(entity_id);
 CREATE INDEX idx_entity_state_entity_time ON entity_state(entity_id, time);
 CREATE INDEX idx_entity_varattr_value_entity_state_id ON entity_varattr_value(entity_state_id);

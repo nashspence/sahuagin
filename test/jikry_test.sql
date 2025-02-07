@@ -1,0 +1,1 @@
+CALL generate_entity_state(1, 0, 1);
