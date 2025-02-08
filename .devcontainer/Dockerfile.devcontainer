@@ -59,6 +59,12 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/* \
     && pipx install sqlfluff
 
+# Install MariaDB CLI (mariadb-client) using the official repository setup script
+RUN curl -LsS https://r.mariadb.com/downloads/mariadb_repo_setup | bash && \
+    apt-get update && \
+    apt-get install -y mariadb-client && \
+    rm -rf /var/lib/apt/lists/*
+
 ENV PATH="/root/.local/bin:${PATH}"
 
 COPY poststart.sh /usr/local/bin/poststart.sh
