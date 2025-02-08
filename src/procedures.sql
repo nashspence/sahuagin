@@ -180,12 +180,6 @@ proc_begin: BEGIN
   DECLARE v_span_id       INT UNSIGNED DEFAULT NULL;
   DECLARE v_spanCount     INT DEFAULT 0;
 
-  -- Log the input parameters.
-  CALL log('roll_discrete_varattr',
-           CONCAT('START: p_variantAttributeId=', p_variantAttributeId,
-                  ', p_variantAttrVariantSpanId=', p_variantAttrVariantSpanId,
-                  ', p_excludeSpanId=', p_excludeSpanId));
-
   -- Build _OrderedSpans with candidate spans and cumulative weights.
   DROP TEMPORARY TABLE IF EXISTS _OrderedSpans;
   
@@ -282,17 +276,11 @@ proc_begin: BEGIN
     runningTotal,
     COALESCE(LAG(runningTotal) OVER (ORDER BY span_id), 0) AS prevRunningTotal
   FROM OrderedSpansCTE;
-  
-  -- Log the number of rows created.
-  SELECT COUNT(*) INTO v_spanCount FROM _OrderedSpans;
-  CALL log('roll_discrete_varattr', CONCAT('_OrderedSpans row count = ', v_spanCount));
 
   -- Get total cumulative weight; if 0, return NULL.
   SELECT COALESCE(MAX(runningTotal), 0) INTO v_totalWeight FROM _OrderedSpans;
-  CALL log('roll_discrete_varattr', CONCAT('v_totalWeight = ', v_totalWeight));
 
   IF v_totalWeight <= 0 THEN
-    CALL log('roll_discrete_varattr','v_totalWeight<=0; exiting procedure.');
     DROP TEMPORARY TABLE IF EXISTS _OrderedSpans;
     SELECT NULL AS selected_span_id;
     LEAVE proc_begin;
@@ -300,15 +288,12 @@ proc_begin: BEGIN
   
   -- Roll a random number and select the span where it lands.
   SET v_randomPick = FLOOR(RAND() * v_totalWeight);
-  CALL log('roll_discrete_varattr', CONCAT('v_randomPick = ', v_randomPick));
   
   SELECT span_id INTO v_span_id 
   FROM _OrderedSpans
   WHERE v_randomPick >= prevRunningTotal
     AND v_randomPick < runningTotal
   LIMIT 1;
-  
-  CALL log('roll_discrete_varattr', CONCAT('Chosen span_id = ', IFNULL(v_span_id, 'NULL')));
   
   DROP TEMPORARY TABLE IF EXISTS _OrderedSpans;
   SET @span_id = v_span_id;
@@ -495,7 +480,6 @@ BEGIN
     DECLARE v_used_span_id            INT UNSIGNED;
     DECLARE v_sub_variant_id          INT UNSIGNED;
     DECLARE done                      INT DEFAULT FALSE;
-    DECLARE v_attr_count              INT DEFAULT 0;  -- to count attributes in _VariantAttributes
     DECLARE v_attr_counter            INT DEFAULT 0;  -- to count iterations in the cursor loop
 
     DECLARE va_cursor CURSOR FOR
@@ -504,11 +488,6 @@ BEGIN
     
     -- Label the main block.
     generate_entity_state_proc: BEGIN
-        CALL log('generate_entity_state',
-                 CONCAT('Starting procedure: p_entity_id=', p_entity_id,
-                        ', p_time=', p_time,
-                        ', p_regenerate_entity_state_id=', p_regenerate_entity_state_id));
-
         -- 0) Get the root variant.
         SELECT variant_id 
           INTO v_root_variant_id 
@@ -517,21 +496,17 @@ BEGIN
          LIMIT 1;
 
         IF v_root_variant_id IS NULL THEN
-           CALL log('generate_entity_state', CONCAT('No entity found with id=', p_entity_id));
            SELECT CONCAT('No entity found with id=', p_entity_id) AS error_message;
            LEAVE generate_entity_state_proc;
         END IF;
-        CALL log('generate_entity_state', CONCAT('Found root variant: ', v_root_variant_id));
 
         -- 1) Use supplied state id (regeneration) or insert a new entity_state.
         IF p_regenerate_entity_state_id IS NOT NULL THEN
             SET v_entity_state_id = p_regenerate_entity_state_id;
-            CALL log('generate_entity_state', CONCAT('Regenerating using entity_state_id=', v_entity_state_id));
         ELSE
             INSERT INTO entity_state (entity_id, `time`)
             VALUES (p_entity_id, p_time);
             SET v_entity_state_id = LAST_INSERT_ID();
-            CALL log('generate_entity_state', CONCAT('Created new entity_state_id=', v_entity_state_id));
         END IF;
 
         -- 2) Create a temporary variant queue.
@@ -540,7 +515,6 @@ BEGIN
             variant_id INT UNSIGNED NOT NULL
         ) ENGINE=MEMORY;
         INSERT INTO _VariantQueue (variant_id) VALUES (v_root_variant_id);
-        CALL log('generate_entity_state', 'Temporary table _VariantQueue created and seeded.');
 
         -- 3) Create a temporary table for variant attributes.
         DROP TEMPORARY TABLE IF EXISTS _VariantAttributes;
@@ -548,16 +522,11 @@ BEGIN
             va_id     INT UNSIGNED,
             attr_type ENUM('discrete','continuous')
         ) ENGINE=MEMORY;
-        CALL log('generate_entity_state', 'Temporary table _VariantAttributes created.');
 
         -- Process the variant queue.
         WHILE (SELECT COUNT(*) FROM _VariantQueue) > 0 DO
-            CALL log('generate_entity_state', 
-                CONCAT('Processing _VariantQueue; remaining count = ', (SELECT COUNT(*) FROM _VariantQueue)));
-
             -- 3A) Pop one variant from the queue.
             SELECT variant_id INTO v_current_variant FROM _VariantQueue LIMIT 1;
-            CALL log('generate_entity_state', CONCAT('Popped variant: ', v_current_variant));
             DELETE FROM _VariantQueue WHERE variant_id = v_current_variant LIMIT 1;
 
             -- 3B) Populate _VariantAttributes for the current variant.
@@ -566,17 +535,7 @@ BEGIN
             SELECT va.id, a.type 
               FROM variant_attribute va
               JOIN attribute a ON a.id = va.attribute_id
-             WHERE va.variant_id = v_current_variant;
-            CALL log('generate_entity_state', 
-                CONCAT('Populated _VariantAttributes for variant ', v_current_variant));
-
-            -- Log the number of attributes and list their contents.
-            SELECT COUNT(*) INTO v_attr_count FROM _VariantAttributes;
-            CALL log('generate_entity_state', 
-                CONCAT('Number of variant attributes for variant ', v_current_variant, ': ', v_attr_count));
-            SELECT GROUP_CONCAT(CONCAT(va_id, '(', attr_type, ')')) INTO @va_list FROM _VariantAttributes;
-            CALL log('generate_entity_state', 
-                CONCAT('Contents of _VariantAttributes: ', IFNULL(@va_list, 'empty')));
+              WHERE va.variant_id = v_current_variant;
 
             -- 3C) Process each variant attribute.
             SET v_attr_counter = 0;
@@ -585,13 +544,10 @@ BEGIN
             read_loop: LOOP
                 FETCH va_cursor INTO cur_va_id, cur_attr_type;
                 IF done THEN 
-                    CALL log('generate_entity_state', 'No more variant attributes to process in cursor.');
                     LEAVE read_loop; 
                 END IF;
                 
                 SET v_attr_counter = v_attr_counter + 1;
-                CALL log('generate_entity_state',
-                         CONCAT('Processing attribute #', v_attr_counter, ': va_id=', cur_va_id, ', type=', cur_attr_type));
                 
                 -- Get the variant_attr_span id in an isolated block so that a NOT FOUND here doesn't affect the cursor.
                 BEGIN
@@ -603,13 +559,6 @@ BEGIN
                        AND variant_id = v_current_variant
                      LIMIT 1;
                 END;
-                IF v_variantAttrVariantSpanId IS NULL THEN
-                    CALL log('generate_entity_state', 
-                             CONCAT('Warning: No variant_attr_span found for va_id=', cur_va_id, ' and variant=', v_current_variant));
-                ELSE
-                    CALL log('generate_entity_state',
-                             CONCAT('For va_id=', cur_va_id, ', found v_variantAttrVariantSpanId=', v_variantAttrVariantSpanId));
-                END IF;
 
                 IF p_regenerate_entity_state_id IS NOT NULL THEN
                     SELECT id, span_id 
@@ -618,13 +567,9 @@ BEGIN
                      WHERE entity_state_id = v_entity_state_id
                        AND variant_attribute_id = cur_va_id
                      LIMIT 1;
-                    CALL log('generate_entity_state',
-                             CONCAT('Found existing entity_varattr_value for va_id=', cur_va_id, ': id=', v_existing_evav_id, ', span_id=', v_existing_span_id));
                 ELSE
                     SET v_existing_evav_id = NULL;
                     SET v_existing_span_id = NULL;
-                    CALL log('generate_entity_state',
-                             CONCAT('No existing entity_varattr_value for va_id=', cur_va_id));
                 END IF;
 
                 IF p_regenerate_entity_state_id IS NOT NULL 
@@ -632,35 +577,20 @@ BEGIN
                     SELECT COUNT(*) 
                       INTO v_lock_count 
                       FROM evav_lock
-                     WHERE locked_evav_id = v_existing_evav_id;
-                    CALL log('generate_entity_state',
-                             CONCAT('For existing evav_id=', v_existing_evav_id, ', lock count=', v_lock_count));
+                      WHERE locked_evav_id = v_existing_evav_id;
                     IF v_lock_count > 0 THEN
                         SET v_used_span_id = v_existing_span_id;
-                        CALL log('generate_entity_state',
-                                 CONCAT('Lock exists. Using existing span_id=', v_used_span_id, ' for va_id=', cur_va_id));
                     ELSE
                         IF cur_attr_type = 'discrete' THEN
-                            CALL log('generate_entity_state',
-                                     CONCAT('[EXISTING] Discrete: va_id=', cur_va_id,
-                                            ', calling roll_discrete_varattr with v_variantAttrVariantSpanId=', v_variantAttrVariantSpanId));
                             CALL roll_discrete_varattr(cur_va_id, v_variantAttrVariantSpanId, 0);
                             SELECT @span_id INTO v_new_span_id;
-                            CALL log('generate_entity_state',
-                                     CONCAT('[EXISTING] roll_discrete_varattr returned span id=', IFNULL(v_new_span_id, 'NULL')));
                             UPDATE entity_varattr_value
                                SET span_id = v_new_span_id
                              WHERE id = v_existing_evav_id;
                             SET v_used_span_id = v_new_span_id;
                         ELSE
-                            CALL log('generate_entity_state',
-                                     CONCAT('[EXISTING] Continuous: va_id=', cur_va_id,
-                                            ', calling roll_continuous_varattr with v_variantAttrVariantSpanId=', v_variantAttrVariantSpanId));
                             CALL roll_continuous_varattr(cur_va_id, v_variantAttrVariantSpanId, 0);
                             SELECT @span_id, @chosen_value INTO v_new_span_id, v_new_numeric;
-                            CALL log('generate_entity_state',
-                                     CONCAT('[EXISTING] roll_continuous_varattr returned span id=', IFNULL(v_new_span_id, 'NULL'),
-                                            ', chosen value=', IFNULL(v_new_numeric, 'NULL')));
                             UPDATE entity_varattr_value
                                SET span_id = v_new_span_id, numeric_value = v_new_numeric
                              WHERE id = v_existing_evav_id;
@@ -669,13 +599,8 @@ BEGIN
                     END IF;
                 ELSE
                     IF cur_attr_type = 'discrete' THEN
-                        CALL log('generate_entity_state',
-                                 CONCAT('[NEW] Discrete: va_id=', cur_va_id,
-                                        ', calling roll_discrete_varattr with v_variantAttrVariantSpanId=', v_variantAttrVariantSpanId));
                         CALL roll_discrete_varattr(cur_va_id, v_variantAttrVariantSpanId, 0);
                         SELECT @span_id INTO v_new_span_id;
-                        CALL log('generate_entity_state',
-                                 CONCAT('[NEW] roll_discrete_varattr returned span id=', IFNULL(v_new_span_id, 'NULL')));
                         INSERT INTO entity_varattr_value (
                             entity_state_id,
                             numeric_value,
@@ -689,14 +614,8 @@ BEGIN
                         );
                         SET v_used_span_id = v_new_span_id;
                     ELSE
-                        CALL log('generate_entity_state',
-                                 CONCAT('[NEW] Continuous: va_id=', cur_va_id,
-                                        ', calling roll_continuous_varattr with v_variantAttrVariantSpanId=', v_variantAttrVariantSpanId));
                         CALL roll_continuous_varattr(cur_va_id, v_variantAttrVariantSpanId, 0);
                         SELECT @span_id, @chosen_value INTO v_new_span_id, v_new_numeric;
-                        CALL log('generate_entity_state',
-                                 CONCAT('[NEW] roll_continuous_varattr returned span id=', IFNULL(v_new_span_id, 'NULL'),
-                                        ', chosen value=', IFNULL(v_new_numeric, 'NULL')));
                         INSERT INTO entity_varattr_value (
                             entity_state_id,
                             numeric_value,
@@ -711,8 +630,6 @@ BEGIN
                         SET v_used_span_id = v_new_span_id;
                     END IF;
                 END IF;
-                CALL log('generate_entity_state', 
-                    CONCAT('After processing va_id=', cur_va_id, ', v_used_span_id=', v_used_span_id));
 
                 -- 3D) If the chosen span activates a sub–variant, enqueue it.
                 BEGIN
@@ -727,22 +644,13 @@ BEGIN
                 IF v_sub_variant_id IS NOT NULL AND v_sub_variant_id <> v_current_variant THEN
                     INSERT IGNORE INTO _VariantQueue (variant_id)
                     VALUES (v_sub_variant_id);
-                    CALL log('generate_entity_state', 
-                             CONCAT('Enqueued sub-variant ', v_sub_variant_id, ' from va_id=', cur_va_id));
-                ELSE
-                    CALL log('generate_entity_state', 
-                             CONCAT('No sub-variant enqueued for va_id=', cur_va_id));
                 END IF;
             END LOOP;
             CLOSE va_cursor;
-            CALL log('generate_entity_state', 
-                     CONCAT('Finished processing ', v_attr_counter, ' variant attribute(s) for variant ', v_current_variant));
         END WHILE;
 
         DROP TEMPORARY TABLE IF EXISTS _VariantAttributes;
         DROP TEMPORARY TABLE IF EXISTS _VariantQueue;
-
-        CALL log('generate_entity_state', CONCAT('Procedure complete. New entity_state_id=', v_entity_state_id));
 
         SELECT v_entity_state_id AS new_entity_state_id;
     END generate_entity_state_proc;
