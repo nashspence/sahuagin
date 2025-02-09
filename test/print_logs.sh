@@ -1,6 +1,6 @@
-mariadb -h localhost -P 3306 -u root -ptest -D sahuagin --batch --raw -e "
-SELECT JSON_ARRAYAGG(
-    JSON_OBJECT(
+PGPASSWORD="test" psql -h localhost -p 5432 -U postgres -d sahuagin -t -A -c "
+SELECT json_agg(
+    json_build_object(
         'id', id,
         'log_time', log_time,
         'procedure_name', procedure_name,

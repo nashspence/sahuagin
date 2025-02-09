@@ -1,4 +1,4 @@
 docker-compose.override*.yml
 docker-data
 /target
-/bind-mounts/mariadb
+/bind-mounts/postgres

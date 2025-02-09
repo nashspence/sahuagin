@@ -1,6 +1,7 @@
 DELIMITER $$
 
 
+DROP PROCEDURE IF EXISTS log$$
 CREATE PROCEDURE log(
     IN p_procedure_name VARCHAR(255),
     IN p_log_message TEXT
@@ -311,7 +312,7 @@ roll_cont_proc: BEGIN
     DECLARE v_attributeId INT UNSIGNED;
     DECLARE v_decimals INT DEFAULT 0;
     DECLARE v_min, v_max, v_normal DOUBLE;
-    DECLARE v_percentNormal, v_percentPinned, v_percentSkewed DOUBLE;
+    DECLARE v_percentNormal, v_percentSkewed DOUBLE;
     
     DECLARE v_totalDeltaNormal, v_totalDeltaPnormal, v_totalDeltaPskew DOUBLE DEFAULT 0;
     DECLARE v_effMin, v_effMax, v_effNormal DOUBLE;
@@ -333,9 +334,8 @@ roll_cont_proc: BEGIN
            a.max_value,
            a.normal_value,
            a.percent_normal,
-           a.percent_pinned,
            a.percent_skewed
-      INTO v_attributeId, v_decimals, v_min, v_max, v_normal, v_percentNormal, v_percentPinned, v_percentSkewed
+      INTO v_attributeId, v_decimals, v_min, v_max, v_normal, v_percentNormal, v_percentSkewed
       FROM variant_attribute va
       JOIN attribute a ON a.id = va.attribute_id
      WHERE va.id = p_variantAttributeId
@@ -391,7 +391,7 @@ roll_cont_proc: BEGIN
     END IF;
     SET v_degreeEstimate         = -2.3 / LN((v_percentNormal / 100) + 0.000052) - 0.5;
     SET v_mult                   = FLOOR(v_degreeEstimate / 0.04);
-    SET v_discreteDegreeEstimate = v_degreeEstimate - (v_mult * 0.04);
+    SET v_discreteDegreeEstimate = v_mult * 0.04;
     SET v_cubicDegreeEstimate    = 1 + 2 * v_discreteDegreeEstimate;
     SET v_skewed                 = v_randomUniform - v_midpoint - v_skewOffset;
     SET v_distributed            = SIGN(v_skewed) * POW(ABS(v_skewed), v_cubicDegreeEstimate);
@@ -462,7 +462,8 @@ DROP PROCEDURE IF EXISTS generate_entity_state$$
 CREATE PROCEDURE generate_entity_state(
     IN  p_entity_id                    INT UNSIGNED,
     IN  p_time                         DOUBLE,
-    IN  p_regenerate_entity_state_id   INT UNSIGNED
+    IN  p_regenerate_entity_state_id   INT UNSIGNED,
+    OUT out_entity_state_id            INT UNSIGNED
 )
 BEGIN
     -- All DECLARE statements must come first!
@@ -508,6 +509,7 @@ BEGIN
             VALUES (p_entity_id, p_time);
             SET v_entity_state_id = LAST_INSERT_ID();
         END IF;
+        SET out_entity_state_id = v_entity_state_id;
 
         -- 2) Create a temporary variant queue.
         DROP TEMPORARY TABLE IF EXISTS _VariantQueue;
@@ -651,9 +653,24 @@ BEGIN
 
         DROP TEMPORARY TABLE IF EXISTS _VariantAttributes;
         DROP TEMPORARY TABLE IF EXISTS _VariantQueue;
-
-        SELECT v_entity_state_id AS new_entity_state_id;
     END generate_entity_state_proc;
+END$$
+
+
+DROP PROCEDURE IF EXISTS generate_entity_states_in_range$$
+CREATE PROCEDURE generate_entity_states_in_range(
+    IN  p_entity_id                    INT UNSIGNED,
+    IN  p_start_time                   DOUBLE,
+    IN  p_end_time                     DOUBLE,
+    IN  p_time_step                    DOUBLE
+)
+BEGIN
+    DECLARE v_time           DOUBLE;
+    SET v_time = p_start_time;
+    WHILE v_time <= p_end_time DO
+        CALL generate_entity_state(p_entity_id, v_time, NULL, @unused);
+        SET v_time = v_time + p_time_step;
+    END WHILE;
 END$$
 
 
@@ -824,35 +841,35 @@ CREATE PROCEDURE add_variant_attribute(
 )
 BEGIN
     DECLARE v_count INT DEFAULT 0;
-    DECLARE v_position INT DEFAULT p_position;
+    DECLARE v_position INT;
 
-    -- Count the number of variant_attributes currently in this variant.
     SELECT COUNT(*) INTO v_count 
       FROM variant_attribute 
      WHERE variant_id = p_variant_id;
 
-    -- Enforce a minimum position of 0.
-    IF v_position < 0 THEN 
-        SET v_position = 0;
-    END IF;
-    
-    -- If the position is greater than the current count, append at the end.
-    IF v_position > v_count THEN
+    IF p_position IS NULL THEN
+        -- Append at the end. Since indices are 0-based and contiguous, the next index is v_count.
         SET v_position = v_count;
+    ELSE
+        SET v_position = p_position;
+
+        IF v_position < 0 THEN 
+            SET v_position = 0;
+        END IF;
+    
+        IF v_position > v_count THEN
+            SET v_position = v_count;
+        END IF;
+    
+        -- Shift any existing attributes at or after the chosen position upward by one.
+        UPDATE variant_attribute
+           SET causation_index = causation_index + 1
+         WHERE variant_id = p_variant_id
+           AND causation_index >= v_position;
     END IF;
 
-    -- Shift any existing variant_attributes at or after the new position upward by one.
-    UPDATE variant_attribute
-       SET causation_index = causation_index + 1
-     WHERE variant_id = p_variant_id
-       AND causation_index >= v_position;
-
-    -- Insert the new variant_attribute with the proper (zero-indexed) causation_index.
     INSERT INTO variant_attribute (attribute_id, name, causation_index, variant_id)
     VALUES (p_attribute_id, p_name, v_position, p_variant_id);
-
-    -- Return the new variant_attribute id.
-    SELECT LAST_INSERT_ID() AS new_variant_attribute_id;
 END$$
 
 
@@ -949,102 +966,87 @@ CREATE PROCEDURE add_discrete_span(
 )
 proc: BEGIN
   DECLARE v_total_weight INT DEFAULT 0;
-  DECLARE v_unpinned_weight INT DEFAULT 0;
-  DECLARE v_count_unpinned INT DEFAULT 0;
-  DECLARE v_min_unpinned_weight INT DEFAULT 0;
-  DECLARE v_scale_factor DOUBLE DEFAULT 0;
-  DECLARE v_new_span_weight INT DEFAULT 0;
-  DECLARE v_new_total INT DEFAULT 0;
+  DECLARE v_pinned_weight INT DEFAULT 0;
+  DECLARE v_target INT DEFAULT 0;
+  DECLARE v_count_old INT DEFAULT 0;
+  DECLARE v_new_count INT DEFAULT 0;
+  DECLARE candidate DECIMAL(10,4) DEFAULT 0;
+  DECLARE v_sum_base INT DEFAULT 0;
   DECLARE v_diff INT DEFAULT 0;
-  DECLARE v_old_span_new_weight INT DEFAULT 0;
 
-  -- Get the overall total weight of discrete spans for the attribute.
-  SELECT COALESCE(SUM(weight), 0)
-    INTO v_total_weight
-  FROM span
-  WHERE attribute_id = p_attribute_id
-    AND type = 'discrete';
-
-  -- If no discrete spans exist yet, insert the first one with full weight.
+  -- Get overall total weight; if none, insert first span.
+  SELECT COALESCE(SUM(weight),0) INTO v_total_weight
+    FROM span
+    WHERE attribute_id = p_attribute_id AND type = 'discrete';
   IF v_total_weight = 0 THEN
     INSERT INTO span(attribute_id, label, type, is_percentage_pinned, weight)
-         VALUES(p_attribute_id, p_label, 'discrete', 0, 100);
+      VALUES(p_attribute_id, p_label, 'discrete', 0, 100);
     LEAVE proc;
   END IF;
 
-  -- Get the sum and count for unpinned discrete spans.
-  SELECT COALESCE(SUM(weight), 0), COUNT(*)
-    INTO v_unpinned_weight, v_count_unpinned
-  FROM span
-  WHERE attribute_id = p_attribute_id
-    AND type = 'discrete'
-    AND is_percentage_pinned = 0;
+  -- Determine target weight for unpinned spans.
+  SELECT COALESCE(SUM(weight),0) INTO v_pinned_weight
+    FROM span
+    WHERE attribute_id = p_attribute_id AND type = 'discrete' AND is_percentage_pinned = 1;
+  SET v_target = v_total_weight - v_pinned_weight;
 
-  IF v_count_unpinned = 0 THEN
-    SIGNAL SQLSTATE '45000'
-           SET MESSAGE_TEXT = 'No unpinned discrete spans available for adjustment.';
-  END IF;
+  -- Count current unpinned spans.
+  SELECT COUNT(*) INTO v_count_old
+    FROM span
+    WHERE attribute_id = p_attribute_id AND type = 'discrete' AND is_percentage_pinned = 0;
 
-  -- Special handling when only one unpinned span exists.
-  IF v_count_unpinned = 1 THEN
-    -- For a single span, split its weight in half.
-    SET v_new_span_weight = ROUND(v_unpinned_weight / 2);
-    SET v_old_span_new_weight = v_unpinned_weight - v_new_span_weight;
-    
-    -- Update the existing unpinned span with its new (reduced) weight.
-    UPDATE span
-      SET weight = v_old_span_new_weight
-    WHERE attribute_id = p_attribute_id
-      AND type = 'discrete'
-      AND is_percentage_pinned = 0;
-
-    -- Insert the new span with the other half.
-    INSERT INTO span(attribute_id, label, type, is_percentage_pinned, weight)
-         VALUES(p_attribute_id, p_label, 'discrete', 0, v_new_span_weight);
-
-    LEAVE proc;
-  END IF;
-
-  -- Normal operation when more than one unpinned span exists.
-  -- Find the minimum weight among unpinned spans.
-  SELECT MIN(weight)
-    INTO v_min_unpinned_weight
-  FROM span
-  WHERE attribute_id = p_attribute_id
-    AND type = 'discrete'
-    AND is_percentage_pinned = 0;
-
-  -- The new span gets the minimum weight.
-  SET v_new_span_weight = v_min_unpinned_weight;
-  SET v_scale_factor = (v_unpinned_weight - v_new_span_weight) / v_unpinned_weight;
-
-  -- Scale down all existing unpinned spans.
-  UPDATE span
-    SET weight = ROUND(weight * v_scale_factor)
-  WHERE attribute_id = p_attribute_id
-    AND type = 'discrete'
-    AND is_percentage_pinned = 0;
-
-  -- Insert the new span.
+  -- Insert the new unpinned span with a dummy weight.
   INSERT INTO span(attribute_id, label, type, is_percentage_pinned, weight)
-       VALUES(p_attribute_id, p_label, 'discrete', 0, v_new_span_weight);
+    VALUES(p_attribute_id, p_label, 'discrete', 0, 0);
+  SET v_new_count = v_count_old + 1;
+  SET candidate = v_target / v_new_count;
 
-  -- Adjust for any rounding drift.
-  SELECT SUM(weight)
-    INTO v_new_total
-  FROM span
-  WHERE attribute_id = p_attribute_id
-    AND type = 'discrete';
+  -- Create a temporary table to compute optimal weights.
+  CREATE TEMPORARY TABLE tmp_unpinned (
+    id INT PRIMARY KEY,
+    ideal DECIMAL(10,4),
+    base INT,
+    frac DECIMAL(10,4),
+    final_weight INT
+  );
 
-  SET v_diff = v_total_weight - v_new_total;
+  INSERT INTO tmp_unpinned (id, ideal)
+    SELECT id,
+           CASE 
+             WHEN label = p_label THEN candidate 
+             ELSE weight * ((v_target - candidate) / v_target)
+           END AS ideal
+      FROM span
+     WHERE attribute_id = p_attribute_id 
+       AND type = 'discrete' 
+       AND is_percentage_pinned = 0;
 
-  UPDATE span
-    SET weight = weight + v_diff
-  WHERE attribute_id = p_attribute_id
-    AND type = 'discrete'
-    AND label = p_label
-    ORDER BY id DESC
-    LIMIT 1;
+  UPDATE tmp_unpinned
+    SET base = FLOOR(ideal),
+        frac = ideal - FLOOR(ideal),
+        final_weight = FLOOR(ideal);
+
+  SELECT COALESCE(SUM(base), 0) INTO v_sum_base FROM tmp_unpinned;
+  SET v_diff = v_target - v_sum_base;
+
+  SET @rn = 0;
+  UPDATE tmp_unpinned t
+    JOIN (
+      SELECT id, (@rn := @rn + 1) AS rn
+        FROM tmp_unpinned
+       ORDER BY frac DESC, id ASC
+    ) r ON t.id = r.id
+   SET t.final_weight = t.final_weight + 1
+   WHERE r.rn <= v_diff;
+
+  UPDATE span s
+    JOIN tmp_unpinned t ON s.id = t.id
+   SET s.weight = t.final_weight
+  WHERE s.attribute_id = p_attribute_id 
+    AND s.type = 'discrete' 
+    AND s.is_percentage_pinned = 0;
+
+  DROP TEMPORARY TABLE tmp_unpinned;
 END proc$$
 
 
@@ -1714,11 +1716,31 @@ END$$
 
 DROP PROCEDURE IF EXISTS add_variant$$
 CREATE PROCEDURE add_variant(
-    IN in_variant_name VARCHAR(255)
+    IN  in_variant_name VARCHAR(255),
+    IN  in_attr_keys    TEXT,         -- JSON array of attribute keys, e.g. ["1","2","3"]
+    OUT out_variant_id  INT UNSIGNED
 )
 BEGIN
+    DECLARE new_variant_id INT UNSIGNED;
+    DECLARE i INT DEFAULT 0;
+    DECLARE key_count INT;
+    DECLARE attr_key INT UNSIGNED;
+    DECLARE attr_name VARCHAR(255);
+
     INSERT INTO variant (name)
     VALUES (in_variant_name);
+    SET new_variant_id = LAST_INSERT_ID();
+    SET out_variant_id = new_variant_id;
+
+    IF in_attr_keys IS NOT NULL THEN
+        SET key_count = JSON_LENGTH(in_attr_keys);
+        WHILE i < key_count DO
+            SET attr_key = CAST(JSON_UNQUOTE(JSON_EXTRACT(in_attr_keys, CONCAT('$[', i, ']'))) AS UNSIGNED);
+            SELECT name INTO attr_name FROM attribute WHERE id = attr_key LIMIT 1;
+            CALL add_variant_attribute(new_variant_id, attr_key, attr_name, NULL);
+            SET i = i + 1;
+        END WHILE;
+    END IF;
 END$$
 
 
@@ -1753,10 +1775,59 @@ BEGIN
 END$$
 
 
-DROP PROCEDURE IF EXISTS add_attribute$$
-CREATE PROCEDURE add_attribute(
+DROP PROCEDURE IF EXISTS add_discrete_attr$$
+CREATE PROCEDURE add_discrete_attr(
+    IN  in_name       VARCHAR(255),
+    IN  in_spans      TEXT,  -- JSON array: either [["span1", 10], ["span2", 20]] or ["span1", "span2"]
+    OUT out_attr_id   INT UNSIGNED
+)
+BEGIN
+    DECLARE new_attr_id INT UNSIGNED;
+    DECLARE i INT DEFAULT 0;
+    DECLARE span_count INT;
+    DECLARE span_label VARCHAR(255);
+    DECLARE span_weight INT;
+    DECLARE first_elem_type VARCHAR(32);
+
+    -- Insert the discrete attribute.
+    INSERT INTO attribute (name, type)
+      VALUES (in_name, 'discrete');
+    SET new_attr_id = LAST_INSERT_ID();
+
+    -- Process the JSON spans if provided.
+    IF in_spans IS NOT NULL THEN
+        SET span_count = JSON_LENGTH(in_spans);
+        
+        -- Check the type of the first element, if any, to determine the JSON format.
+        IF span_count > 0 THEN
+            SET first_elem_type = JSON_TYPE(JSON_EXTRACT(in_spans, '$[0]'));
+        ELSE
+            SET first_elem_type = '';
+        END IF;
+
+        WHILE i < span_count DO
+            IF first_elem_type = 'ARRAY' THEN
+                -- For an array of tuples: [span_label, span_weight]
+                SET span_label = JSON_UNQUOTE(JSON_EXTRACT(in_spans, CONCAT('$[', i, '][0]')));
+                SET span_weight = CAST(JSON_EXTRACT(in_spans, CONCAT('$[', i, '][1]')) AS SIGNED);
+                INSERT INTO span (attribute_id, label, type, is_percentage_pinned, weight)
+                  VALUES (new_attr_id, span_label, 'discrete', FALSE, span_weight);
+            ELSE
+                -- For an array of strings, call the helper procedure.
+                SET span_label = JSON_UNQUOTE(JSON_EXTRACT(in_spans, CONCAT('$[', i, ']')));
+                CALL add_discrete_span(new_attr_id, span_label);
+            END IF;
+            SET i = i + 1;
+        END WHILE;
+    END IF;
+
+    SET out_attr_id = new_attr_id;
+END$$
+
+
+DROP PROCEDURE IF EXISTS add_continuous_attr$$
+CREATE PROCEDURE add_continuous_attr(
     IN in_name VARCHAR(255),
-    IN in_type ENUM('discrete','continuous'),
     IN in_decimals INT,
     IN in_has_labels BOOLEAN,
     IN in_has_value BOOLEAN,
@@ -1765,15 +1836,17 @@ CREATE PROCEDURE add_attribute(
     IN in_normal_value DOUBLE,
     IN in_percent_normal DOUBLE,
     IN in_percent_skewed DOUBLE,
-    IN in_units VARCHAR(255)
+    IN in_units VARCHAR(255),
+    OUT out_attr_id INT UNSIGNED
 )
 BEGIN
     INSERT INTO attribute
       (name, type, decimals, has_labels, has_value, max_value, min_value,
        normal_value, percent_normal, percent_skewed, units)
     VALUES
-      (in_name, in_type, in_decimals, in_has_labels, in_has_value, in_max_value,
+      (in_name, 'continuous', in_decimals, in_has_labels, in_has_value, in_max_value,
        in_min_value, in_normal_value, in_percent_normal, in_percent_skewed, in_units);
+    SET out_attr_id = LAST_INSERT_ID();
 END$$
 
 
@@ -1831,11 +1904,12 @@ END$$
 DROP PROCEDURE IF EXISTS add_entity$$
 CREATE PROCEDURE add_entity(
     IN in_name VARCHAR(255),
-    IN in_variant_id INT
+    IN in_variant_id INT,
+    OUT out_entity_id INT UNSIGNED
 )
 BEGIN
-    INSERT INTO entity (name, variant_id)
-    VALUES (in_name, in_variant_id);
+    INSERT INTO entity (name, variant_id) VALUES (in_name, in_variant_id);
+    SET out_entity_id = LAST_INSERT_ID();
 END$$
 
 

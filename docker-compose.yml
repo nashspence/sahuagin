@@ -1,13 +1,13 @@
 services:
-  mariadb:
-    container_name: mariadb
+  postgres:
+    container_name: postgres
     environment:
-      - MARIADB_ROOT_HOST=%
-      - MARIADB_ROOT_PASSWORD=test
+      - POSTGRES_PASSWORD=test
+      - POSTGRES_DB=sahuagin
       - TZ=America/Los_Angeles
     ports:
-      - "3306:3306"
-    image: mariadb:latest
+      - "5432:5432"
+    image: postgres:latest
     restart: unless-stopped
     volumes:
-      - ./bind-mounts/mariadb:/var/lib/mysql
+      - ./bind-mounts/postgres:/var/lib/postgresql/data
