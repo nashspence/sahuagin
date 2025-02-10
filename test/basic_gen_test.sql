@@ -6,6 +6,8 @@ DECLARE
   human       integer;
   jikry       integer;
   jikry_t0    integer;
+  jikry_t1    integer;
+  jikry_t2    integer;
 BEGIN
   CALL add_discrete_attr('Gender', json_build_array('Male', 'Female'), gender);
   CALL add_discrete_attr(

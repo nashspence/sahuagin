@@ -1,9 +1,9 @@
---#region "log"
+--#region "debug_log"
 
-CREATE OR REPLACE PROCEDURE log(
+CREATE OR REPLACE FUNCTION debug_log(
     p_procedure_name varchar,
     p_log_message text
-)
+) RETURNS void
 LANGUAGE plpgsql
 AS $$
 BEGIN
@@ -22,98 +22,69 @@ CREATE OR REPLACE PROCEDURE add_discrete_span(
 LANGUAGE plpgsql
 AS $$
 DECLARE
-    v_total_weight INTEGER := 0;
-    v_pinned_weight INTEGER := 0;
-    v_target INTEGER := 0;
-    v_count_old INTEGER := 0;
-    v_new_count INTEGER := 0;
-    candidate NUMERIC(10,4) := 0;
-    v_sum_base INTEGER := 0;
-    v_diff INTEGER := 0;
+    v_total_weight    DOUBLE PRECISION;
+    v_pinned_weight   DOUBLE PRECISION;
+    v_target          DOUBLE PRECISION;
+    v_count_old       INTEGER;
+    v_new_count       INTEGER;
+    candidate         DOUBLE PRECISION;
 BEGIN
+    -- Get the total weight for all discrete spans for this attribute.
     SELECT COALESCE(SUM(weight), 0)
       INTO v_total_weight
       FROM span
      WHERE attribute_id = p_attribute_id
        AND type = 'discrete';
-
+       
+    -- If no spans exist, simply insert the first span with weight 1.
     IF v_total_weight = 0 THEN
         INSERT INTO span(attribute_id, label, type, is_percentage_pinned, weight)
-        VALUES (p_attribute_id, p_label, 'discrete', false, 100);
+        VALUES (p_attribute_id, p_label, 'discrete', false, 1.0);
         RETURN;
     END IF;
-
+    
+    -- Compute the total weight of pinned spans.
     SELECT COALESCE(SUM(weight), 0)
       INTO v_pinned_weight
       FROM span
      WHERE attribute_id = p_attribute_id
        AND type = 'discrete'
        AND is_percentage_pinned = true;
-
-    v_target := v_total_weight - v_pinned_weight;
-
+       
+    -- The available weight for all non-pinned spans.
+    v_target := 1.0 - v_pinned_weight;
+    
+    IF v_target <= 0 THEN
+        RAISE EXCEPTION 'No available weight for unpinned spans (v_target = %)', v_target;
+    END IF;
+    
+    -- Count the existing non-pinned discrete spans.
     SELECT COUNT(*)
       INTO v_count_old
       FROM span
      WHERE attribute_id = p_attribute_id
        AND type = 'discrete'
        AND is_percentage_pinned = false;
-
+       
+    -- Insert the new unpinned span with a temporary weight of 0.
     INSERT INTO span(attribute_id, label, type, is_percentage_pinned, weight)
-    VALUES (p_attribute_id, p_label, 'discrete', false, 0);
-
+    VALUES (p_attribute_id, p_label, 'discrete', false, 0.0);
+    
     v_new_count := v_count_old + 1;
-    candidate := v_target::NUMERIC / v_new_count;
-
-    DROP TABLE IF EXISTS tmp_unpinned;
-    CREATE TEMPORARY TABLE tmp_unpinned (
-        id INTEGER PRIMARY KEY,
-        ideal NUMERIC(10,4),
-        base INTEGER,
-        frac NUMERIC(10,4),
-        final_weight INTEGER
-    ) ON COMMIT DROP;
-
-    INSERT INTO tmp_unpinned (id, ideal)
-    SELECT id,
-           CASE
-             WHEN label = p_label THEN candidate
-             ELSE weight * ((v_target::NUMERIC - candidate) / v_target::NUMERIC)
-           END AS ideal
-      FROM span
+    candidate := v_target / v_new_count;
+    
+    -- Recalculate every unpinned span’s weight:
+    -- • The newly inserted span (identified by its label) is given the candidate weight.
+    -- • Each pre-existing unpinned span is scaled proportionally so that its new weight is:
+    --       old_weight * ((v_target - candidate) / v_target)
+    UPDATE span
+       SET weight = CASE 
+                      WHEN label = p_label THEN candidate
+                      ELSE weight * ((v_target - candidate) / v_target)
+                    END
      WHERE attribute_id = p_attribute_id
        AND type = 'discrete'
        AND is_percentage_pinned = false;
-
-    UPDATE tmp_unpinned
-      SET base = FLOOR(ideal)::INTEGER,
-          frac = ideal - FLOOR(ideal),
-          final_weight = FLOOR(ideal)::INTEGER;
-
-    SELECT COALESCE(SUM(base), 0)
-      INTO v_sum_base
-      FROM tmp_unpinned;
-
-    v_diff := v_target - v_sum_base;
-
-    WITH ranked AS (
-         SELECT id,
-                row_number() OVER (ORDER BY frac DESC, id ASC) AS rn
-           FROM tmp_unpinned
-    )
-    UPDATE tmp_unpinned t
-       SET final_weight = t.final_weight + 1
-      FROM ranked r
-     WHERE t.id = r.id
-       AND r.rn <= v_diff;
-
-    UPDATE span s
-       SET weight = t.final_weight
-      FROM tmp_unpinned t
-     WHERE s.id = t.id
-       AND s.attribute_id = p_attribute_id
-       AND s.type = 'discrete'
-       AND s.is_percentage_pinned = false;
 END;
 $$;
 
@@ -297,17 +268,26 @@ $$;
 --#region "roll_discrete_varattr"
 
 CREATE OR REPLACE FUNCTION roll_discrete_varattr(
-    p_variant_attribute_id       INTEGER,
+    p_variant_attribute_id         INTEGER,
     p_variant_attr_variant_span_id INTEGER,
-    p_exclude_span_id            INTEGER
+    p_exclude_span_id              INTEGER
 ) 
 RETURNS INTEGER
 LANGUAGE plpgsql
 AS $$
 DECLARE
     v_span_id INTEGER;
+    v_max_double constant double precision := 1e308;
 BEGIN
-    WITH BaseSpans AS (
+    PERFORM debug_log(
+        'roll_discrete_varattr',
+        'Start: p_variant_attribute_id=' || p_variant_attribute_id ||
+        ', p_variant_attr_variant_span_id=' || p_variant_attr_variant_span_id ||
+        ', p_exclude_span_id=' || p_exclude_span_id
+    );
+
+    WITH
+    BaseSpans AS (
          SELECT s.id AS span_id, 
                 va.id AS variant_attribute_id, 
                 vas.id AS variant_attr_span_id, 
@@ -320,7 +300,8 @@ BEGIN
          WHERE va.id = p_variant_attribute_id 
            AND s.type = 'discrete'
            AND (p_exclude_span_id = 0 OR s.id <> p_exclude_span_id)
-    ), ActiveVariations AS (
+    ), 
+    ActiveVariations AS (
          SELECT v.id AS variation_id, 
                 vav.variant_attribute_id
          FROM variation v
@@ -328,12 +309,14 @@ BEGIN
            ON vav.id = v.to_modify_vavspan_attr_id 
           AND vav.variant_attribute_id = p_variant_attribute_id
          WHERE v.is_inactive = false
-    ), InactiveSpans AS (
+    ), 
+    InactiveSpans AS (
          SELECT DISTINCT vis.span_id
          FROM variation_inactive_span vis
          JOIN ActiveVariations av 
            ON av.variation_id = vis.variation_id
-    ), ActivatedSpans AS (
+    ), 
+    ActivatedSpans AS (
          SELECT DISTINCT 
                 vas.span_id, 
                 av.variant_attribute_id, 
@@ -342,14 +325,16 @@ BEGIN
          FROM variation_activated_span vas
          JOIN ActiveVariations av 
            ON av.variation_id = vas.variation_id
-    ), DeltaWeights AS (
+    ), 
+    DeltaWeights AS (
          SELECT vdw.span_id, 
                 SUM(vdw.delta_weight) AS total_delta
          FROM variation_delta_weight vdw
          JOIN ActiveVariations av 
            ON av.variation_id = vdw.variation_id
          GROUP BY vdw.span_id
-    ), AllRelevantSpans AS (
+    ), 
+    AllRelevantSpans AS (
          SELECT b.span_id, b.variant_attribute_id, b.variant_attr_span_id, b.base_weight
          FROM BaseSpans b
          WHERE b.span_id NOT IN (SELECT span_id FROM InactiveSpans)
@@ -357,7 +342,8 @@ BEGIN
          SELECT a.span_id, a.variant_attribute_id, a.variant_attr_span_id, a.base_weight
          FROM ActivatedSpans a
          WHERE a.span_id NOT IN (SELECT span_id FROM InactiveSpans)
-    ), FinalSpans AS (
+    ), 
+    FinalSpans AS (
          SELECT ars.span_id, 
                 ars.variant_attribute_id, 
                 ars.variant_attr_span_id,
@@ -365,49 +351,72 @@ BEGIN
          FROM AllRelevantSpans ars
          LEFT JOIN DeltaWeights dw 
            ON dw.span_id = ars.span_id
-    ), OrderedSpansCTE AS (
+    ),
+    SpanCounts AS (
+         SELECT ns.num_spans, 
+                SUM(fs.effective_weight / ns.num_spans) AS total_weight
+         FROM FinalSpans fs
+         CROSS JOIN (
+             SELECT COUNT(*)::double precision AS num_spans 
+             FROM FinalSpans 
+             WHERE effective_weight > 0
+         ) ns
+         WHERE fs.effective_weight > 0
+         GROUP BY ns.num_spans
+    ),
+    AdjustedSpans AS (
+         SELECT fs.span_id,
+                fs.variant_attribute_id,
+                fs.variant_attr_span_id,
+                fs.effective_weight,
+                sc.num_spans,
+                sc.total_weight,
+                CASE 
+                  WHEN fs.effective_weight < 1 
+                    THEN ceil((fs.effective_weight * v_max_double) / (sc.total_weight * sc.num_spans))
+                  ELSE ceil((fs.effective_weight / (sc.total_weight * sc.num_spans)) * v_max_double)
+                END AS adjusted_weight
+         FROM FinalSpans fs
+         CROSS JOIN SpanCounts sc
+         WHERE fs.effective_weight > 0
+    ),
+    Running AS (
          SELECT span_id,
                 variant_attribute_id,
                 variant_attr_span_id,
-                contextual_weight,
+                adjusted_weight,
+                SUM(adjusted_weight) OVER (ORDER BY span_id) AS running_total
+         FROM AdjustedSpans
+    ),
+    OrderedSpansCTE AS (
+         SELECT span_id,
+                variant_attribute_id,
+                variant_attr_span_id,
+                adjusted_weight AS contextual_weight,
                 running_total,
-                COALESCE(LAG(running_total) OVER (ORDER BY span_id), 0) AS prev_running_total
-         FROM (
-              SELECT fs.span_id,
-                     fs.variant_attribute_id,
-                     fs.variant_attr_span_id,
-                     fs.effective_weight AS contextual_weight,
-                     SUM(fs.effective_weight) OVER (
-                           ORDER BY fs.span_id 
-                           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-                     ) AS running_total
-              FROM FinalSpans fs
-              WHERE fs.effective_weight > 0
-         ) sub
-    ), TotalWeight AS (
-         SELECT COALESCE(MAX(running_total), 0) AS v_total_weight
+                LAG(running_total, 1, 0) OVER (ORDER BY span_id) AS prev_running_total
+         FROM Running
+    ),
+    TotalAdjusted AS (
+         SELECT MAX(running_total) AS v_total_weight
          FROM OrderedSpansCTE
-    ), ChosenSpan AS (
-         SELECT o.span_id, t.v_total_weight,
+    ),
+    Rng AS (
+         SELECT t.v_total_weight,
                 floor(random() * t.v_total_weight) AS v_random_pick
-         FROM OrderedSpansCTE o, TotalWeight t
-         ORDER BY o.span_id
-         LIMIT 1  -- This LIMIT may need to be adjusted depending on how you wish to select the row
+         FROM TotalAdjusted t
     )
-    SELECT span_id
+    SELECT o.span_id
       INTO v_span_id
-      FROM ChosenSpan
-     WHERE v_random_pick >= (
-             SELECT COALESCE(LAG(running_total) OVER (ORDER BY span_id), 0)
-             FROM OrderedSpansCTE
-             WHERE span_id = ChosenSpan.span_id
-           )
-       AND v_random_pick < (
-             SELECT running_total
-             FROM OrderedSpansCTE
-             WHERE span_id = ChosenSpan.span_id
-           )
-     LIMIT 1;
+      FROM OrderedSpansCTE o, Rng
+      WHERE Rng.v_random_pick >= o.prev_running_total
+        AND Rng.v_random_pick < o.running_total
+      LIMIT 1;
+
+    PERFORM debug_log(
+        'roll_discrete_varattr',
+        'Chosen v_span_id=' || COALESCE(v_span_id::text, 'NULL')
+    );
 
     RETURN v_span_id;
 END;
@@ -459,6 +468,13 @@ DECLARE
     dummy_eff_min               double precision;
     dummy_eff_max               double precision;
 BEGIN
+    PERFORM debug_log(
+        'roll_continuous_varattr',
+        'Start: p_variant_attribute_id=' || p_variant_attribute_id ||
+        ', p_variant_attr_variant_span_id=' || p_variant_attr_variant_span_id ||
+        ', p_exclude_span_id=' || p_exclude_span_id
+    );
+
     -- Retrieve attribute details.
     SELECT va.attribute_id,
            a.decimals,
@@ -477,6 +493,11 @@ BEGIN
         RAISE EXCEPTION 'No matching attribute found';
     END IF;
 
+    PERFORM debug_log(
+        'roll_continuous_varattr',
+        'Retrieved attribute details: attribute_id=' || v_attribute_id || ', decimals=' || v_decimals
+    );
+
     -- Sum variation deltas.
     SELECT COALESCE(SUM(vca.delta_normal), 0),
            COALESCE(SUM(vca.delta_percent_normal), 0),
@@ -492,6 +513,13 @@ BEGIN
                AND v.is_inactive = false
            ) av ON av.id = vca.variation_id;
 
+    PERFORM debug_log(
+        'roll_continuous_varattr',
+        'Variation deltas: total_delta_normal=' || v_total_delta_normal ||
+        ', total_delta_pnormal=' || v_total_delta_pnormal ||
+        ', total_delta_pskew=' || v_total_delta_pskew
+    );
+
     -- Compute effective min, max and normal.
     IF (v_total_delta_pnormal <> 0 OR v_total_delta_pskew <> 0) THEN
         v_eff_min    := (v_min + v_total_delta_normal) * (1 + v_total_delta_pnormal + v_total_delta_pskew);
@@ -502,6 +530,12 @@ BEGIN
         v_eff_max    := v_max + v_total_delta_normal;
         v_eff_normal := v_normal + v_total_delta_normal;
     END IF;
+
+    PERFORM debug_log(
+        'roll_continuous_varattr',
+        'Effective values: eff_min=' || v_eff_min || ', eff_max=' || v_eff_max || ', eff_normal=' || v_eff_normal
+    );
+
     IF v_eff_max < v_eff_min THEN
         v_tmp    := v_eff_min;
         v_eff_min := v_eff_max;
@@ -544,6 +578,11 @@ BEGIN
         v_clamped_result := v_result;
     END IF;
 
+    PERFORM debug_log(
+        'roll_continuous_varattr',
+        'Computed v_clamped_result=' || v_clamped_result
+    );
+
     -- Select the span matching the computed result.
     IF p_exclude_span_id IS NOT NULL AND p_exclude_span_id <> 0 THEN
         SELECT s.id,
@@ -561,7 +600,7 @@ BEGIN
          WHERE s.attribute_id = v_attribute_id
            AND s.type = 'continuous'
            AND s.id <> p_exclude_span_id
-           AND vas.id = p_variant_attr_variant_span_id
+           AND (p_variant_attr_variant_span_id IS NULL OR vas.id = p_variant_attr_variant_span_id)
            AND (CASE WHEN (v_total_delta_pnormal <> 0 OR v_total_delta_pskew <> 0)
                      THEN (s.min_value + v_total_delta_normal) * (1 + v_total_delta_pnormal + v_total_delta_pskew)
                      ELSE (s.min_value + v_total_delta_normal)
@@ -586,7 +625,7 @@ BEGIN
           JOIN variant_attr_span vas ON vas.span_id = s.id
          WHERE s.attribute_id = v_attribute_id
            AND s.type = 'continuous'
-           AND vas.id = p_variant_attr_variant_span_id
+           AND (p_variant_attr_variant_span_id IS NULL OR vas.id = p_variant_attr_variant_span_id)
            AND (CASE WHEN (v_total_delta_pnormal <> 0 OR v_total_delta_pskew <> 0)
                      THEN (s.min_value + v_total_delta_normal) * (1 + v_total_delta_pnormal + v_total_delta_pskew)
                      ELSE (s.min_value + v_total_delta_normal)
@@ -598,8 +637,19 @@ BEGIN
          LIMIT 1;
     END IF;
 
+    PERFORM debug_log(
+        'roll_continuous_varattr',
+        'Chosen continuous: span_id=' || COALESCE(v_chosen_span_id::text, 'NULL') ||
+        ', numeric_value=' || COALESCE(v_clamped_result::text, 'NULL')
+    );
+
     chosen_span_id := v_chosen_span_id;
     chosen_value   := v_clamped_result;
+    PERFORM debug_log(
+        'roll_continuous_varattr',
+        'Exiting with chosen_span_id=' || chosen_span_id || ', chosen_value=' || chosen_value
+    );
+    RETURN NEXT;
     RETURN;
 END;
 $$;
@@ -632,6 +682,13 @@ DECLARE
     v_attr_counter          INTEGER := 0;
     rec                     RECORD;
 BEGIN
+    PERFORM debug_log(
+        'generate_entity_state',
+        'Start: p_entity_id=' || p_entity_id ||
+        ', p_time=' || p_time ||
+        ', p_regenerate_entity_state_id=' || COALESCE(p_regenerate_entity_state_id::text, 'NULL')
+    );
+
     -- Get the root variant.
     SELECT variant_id
       INTO v_root_variant_id
@@ -640,6 +697,10 @@ BEGIN
     IF v_root_variant_id IS NULL THEN
        RAISE EXCEPTION 'No entity found with id=%', p_entity_id;
     END IF;
+    PERFORM debug_log(
+        'generate_entity_state',
+        'Root variant id=' || v_root_variant_id
+    );
 
     -- Use supplied state id (regeneration) or insert a new entity_state.
     IF p_regenerate_entity_state_id IS NOT NULL THEN
@@ -650,6 +711,10 @@ BEGIN
         RETURNING id INTO v_entity_state_id;
     END IF;
     out_entity_state_id := v_entity_state_id;
+    PERFORM debug_log(
+        'generate_entity_state',
+        'Entity state id=' || v_entity_state_id
+    );
 
     -- Create temporary queue table.
     DROP TABLE IF EXISTS _variant_queue;
@@ -657,6 +722,10 @@ BEGIN
         variant_id INTEGER PRIMARY KEY
     ) ON COMMIT DROP;
     INSERT INTO _variant_queue (variant_id) VALUES (v_root_variant_id);
+    PERFORM debug_log(
+        'generate_entity_state',
+        'Inserted root variant into queue.'
+    );
 
     -- Create temporary table for variant attributes.
     DROP TABLE IF EXISTS _variant_attributes;
@@ -672,6 +741,10 @@ BEGIN
           FROM _variant_queue
          LIMIT 1;
         EXIT WHEN NOT FOUND;
+        PERFORM debug_log(
+            'generate_entity_state',
+            'Processing variant id=' || v_current_variant
+        );
         DELETE FROM _variant_queue
          WHERE variant_id = v_current_variant;
 
@@ -686,9 +759,14 @@ BEGIN
         FOR rec IN
             SELECT va_id, attr_type FROM _variant_attributes
         LOOP
-            cur_va_id   := rec.va_id;
-            cur_attr_type := rec.attr_type;
+            cur_va_id    := rec.va_id;
+            cur_attr_type:= rec.attr_type;
             v_attr_counter := v_attr_counter + 1;
+            PERFORM debug_log(
+                'generate_entity_state',
+                'Processing attribute ' || v_attr_counter ||
+                ': va_id=' || cur_va_id || ', attr_type=' || cur_attr_type
+            );
 
             -- Get the variant_attr_span id; if none, it will remain null.
             SELECT id
@@ -697,6 +775,11 @@ BEGIN
              WHERE variant_attribute_id = cur_va_id
                AND variant_id = v_current_variant
              LIMIT 1;
+            PERFORM debug_log(
+                'generate_entity_state',
+                'Variant_attr_span id for va_id=' || cur_va_id ||
+                ' is ' || COALESCE(v_variant_attr_span_id::text, 'NULL')
+            );
 
             IF p_regenerate_entity_state_id IS NOT NULL THEN
                 SELECT id, span_id
@@ -705,6 +788,11 @@ BEGIN
                  WHERE entity_state_id = v_entity_state_id
                    AND variant_attribute_id = cur_va_id
                  LIMIT 1;
+                PERFORM debug_log(
+                    'generate_entity_state',
+                    'Existing evav: id=' || COALESCE(v_existing_evav_id::text, 'NULL') ||
+                    ', span_id=' || COALESCE(v_existing_span_id::text, 'NULL')
+                );
             ELSE
                 v_existing_evav_id := NULL;
                 v_existing_span_id := NULL;
@@ -714,8 +802,17 @@ BEGIN
                 SELECT count(*) INTO v_lock_count
                   FROM evav_lock
                  WHERE locked_evav_id = v_existing_evav_id;
+                PERFORM debug_log(
+                    'generate_entity_state',
+                    'Lock count for evav id=' || v_existing_evav_id ||
+                    ' is ' || v_lock_count
+                );
                 IF v_lock_count > 0 THEN
                     v_used_span_id := v_existing_span_id;
+                    PERFORM debug_log(
+                        'generate_entity_state',
+                        'Using locked span id=' || v_used_span_id
+                    );
                 ELSE
                     IF cur_attr_type = 'discrete' THEN
                         v_new_span_id := roll_discrete_varattr(cur_va_id, v_variant_attr_span_id, 0);
@@ -723,6 +820,11 @@ BEGIN
                            SET span_id = v_new_span_id
                          WHERE id = v_existing_evav_id;
                         v_used_span_id := v_new_span_id;
+                        PERFORM debug_log(
+                            'generate_entity_state',
+                            'Updated discrete evav id=' || v_existing_evav_id ||
+                            ' with new span id=' || v_new_span_id
+                        );
                     ELSE
                         SELECT t.chosen_span_id, t.chosen_value
                           INTO v_new_span_id, v_new_numeric
@@ -733,6 +835,12 @@ BEGIN
                                numeric_value = v_new_numeric
                          WHERE id = v_existing_evav_id;
                         v_used_span_id := v_new_span_id;
+                        PERFORM debug_log(
+                            'generate_entity_state',
+                            'Updated continuous evav id=' || v_existing_evav_id ||
+                            ' with new span id=' || v_new_span_id ||
+                            ' and numeric_value=' || v_new_numeric
+                        );
                     END IF;
                 END IF;
             ELSE
@@ -750,6 +858,10 @@ BEGIN
                         cur_va_id
                     );
                     v_used_span_id := v_new_span_id;
+                    PERFORM debug_log(
+                        'generate_entity_state',
+                        'Inserted discrete evav with span id=' || v_new_span_id
+                    );
                 ELSE
                     SELECT t.chosen_span_id, t.chosen_value
                       INTO v_new_span_id, v_new_numeric
@@ -767,6 +879,11 @@ BEGIN
                         cur_va_id
                     );
                     v_used_span_id := v_new_span_id;
+                    PERFORM debug_log(
+                        'generate_entity_state',
+                        'Inserted continuous evav with span id=' || v_new_span_id ||
+                        ' and numeric_value=' || v_new_numeric
+                    );
                 END IF;
             END IF;
 
@@ -781,12 +898,21 @@ BEGIN
                 INSERT INTO _variant_queue (variant_id)
                 VALUES (v_sub_variant_id)
                 ON CONFLICT (variant_id) DO NOTHING;
+                PERFORM debug_log(
+                    'generate_entity_state',
+                    'Enqueued sub variant id=' || v_sub_variant_id ||
+                    ' from va_id=' || cur_va_id
+                );
             END IF;
         END LOOP;
     END LOOP;
 
     DROP TABLE IF EXISTS _variant_attributes;
     DROP TABLE IF EXISTS _variant_queue;
+    PERFORM debug_log(
+        'generate_entity_state',
+        'Completed processing for entity state id=' || v_entity_state_id
+    );
 END;
 $$;
 

@@ -52,7 +52,7 @@ CREATE TABLE span (
     label varchar(255) NOT NULL,
     type attribute_enum NOT NULL,
     is_percentage_pinned boolean,
-    weight integer,
+    weight double precision,
     max_value double precision,
     min_value double precision,
     CONSTRAINT fk_spans_attr FOREIGN KEY (attribute_id) REFERENCES attribute (id) ON DELETE CASCADE,
