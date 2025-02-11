@@ -147,11 +147,11 @@ CREATE OR REPLACE PROCEDURE add_continuous_attr(
     p_decimals       INTEGER,
     p_has_labels     BOOLEAN,
     p_has_value      BOOLEAN,
-    p_max_value      DOUBLE PRECISION,
     p_min_value      DOUBLE PRECISION,
-    p_normal_value   DOUBLE PRECISION,
-    p_percent_normal DOUBLE PRECISION,
-    p_percent_skewed DOUBLE PRECISION,
+    p_mode_value     DOUBLE PRECISION,
+    p_max_value      DOUBLE PRECISION,
+    p_concentration  DOUBLE PRECISION,
+    p_skew           DOUBLE PRECISION,
     p_units          VARCHAR(255),
     OUT p_attr_id    INTEGER
 )
@@ -160,10 +160,10 @@ AS $$
 BEGIN
     INSERT INTO attribute
       (name, type, decimals, has_labels, has_value, max_value, min_value,
-       normal_value, percent_normal, percent_skewed, units)
+       mode_value, concentration, skew, units)
     VALUES
       (p_name, 'continuous', p_decimals, p_has_labels, p_has_value, p_max_value,
-       p_min_value, p_normal_value, p_percent_normal, p_percent_skewed, p_units)
+       p_min_value, p_mode_value, p_concentration, p_skew, p_units)
     RETURNING id INTO p_attr_id;
 END;
 $$;
@@ -413,6 +413,96 @@ $$;
 --#endregion
 --#region "roll_continuous_varattr"
 
+CREATE OR REPLACE FUNCTION gamma_rng(shape double precision)
+RETURNS double precision
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    d double precision;
+    c double precision;
+    x double precision;
+    v double precision;
+    u double precision;
+BEGIN
+    IF shape < 1 THEN
+        -- Use the transformation: Gamma(shape) = Gamma(shape+1)*U^(1/shape)
+        RETURN gamma_rng(shape + 1) * power(random(), 1.0 / shape);
+    END IF;
+    d := shape - 1.0/3.0;
+    c := 1.0 / sqrt(9.0 * d);
+    LOOP
+        -- Generate a standard normal via Box–Muller:
+        x := sqrt(-2 * ln(random())) * cos(2 * 3.141592653589793 * random());
+        v := 1 + c * x;
+        IF v <= 0 THEN
+            CONTINUE;
+        END IF;
+        v := v * v * v;
+        u := random();
+        IF u < 1 - 0.0331 * x * x * x * x THEN
+            RETURN d * v;
+        END IF;
+        IF ln(u) < 0.5 * x * x + d * (1 - v + ln(v)) THEN
+            RETURN d * v;
+        END IF;
+    END LOOP;
+END;
+$$;
+
+
+-- using a fast Marsaglia–Tsang method
+CREATE OR REPLACE FUNCTION weighted_random(
+    min_val double precision,                   -- Minimum of desired range.
+    max_val double precision,                   -- Maximum of desired range (must be > min_val).
+    mode_val double precision,                  -- Desired mode (peak) in the same units.
+    skew double precision DEFAULT 0,            -- Skew adjustment; between -1 and 1 only, 0 = no skew.
+    concentration double precision DEFAULT 4    -- Concentration (k); should be >2 for a proper unimodal shape.
+) RETURNS double precision
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    m_norm      double precision;  -- Normalized desired mode in [0,1].
+    alpha       double precision;
+    beta        double precision;
+    x_val       double precision;
+    y_val       double precision;
+    beta_sample double precision;
+BEGIN
+    IF min_val >= max_val THEN
+        RAISE EXCEPTION 'min_val must be less than max_val';
+    END IF;
+    IF concentration < 0 THEN
+        RAISE EXCEPTION 'concentration must be non-negative';
+    END IF;
+    IF concentration <= 2 THEN
+        -- When concentration <= 2 the Beta isn't unimodal; fallback to uniform.
+        RETURN min_val + random() * (max_val - min_val);
+    END IF;
+
+    -- Normalize the desired mode to [0,1].
+    m_norm := (mode_val - min_val) / (max_val - min_val);
+
+    -- Parameterize α and β so that (α-1)/(α+β-2) equals m_norm.
+    alpha := m_norm * (concentration - 2) + 1;
+    beta  := (1 - m_norm) * (concentration - 2) + 1;
+
+    -- Apply skew correction if desired.
+    IF skew <> 0 THEN
+        alpha := alpha * (1 + skew);
+        beta  := beta  * (1 - skew);
+    END IF;
+
+    -- Generate a Beta(α,β) random variable via the Gamma method.
+    x_val := gamma_rng(alpha);
+    y_val := gamma_rng(beta);
+    beta_sample := x_val / (x_val + y_val);
+
+    -- Scale the [0,1] Beta sample to [min_val, max_val].
+    RETURN min_val + beta_sample * (max_val - min_val);
+END;
+$$;
+
+
 CREATE OR REPLACE FUNCTION roll_continuous_varattr(
     p_variant_attribute_id         integer,
     p_variant_attr_variant_span_id integer,
@@ -426,30 +516,15 @@ DECLARE
     v_decimals                  integer;
     v_min                       double precision;
     v_max                       double precision;
-    v_normal                    double precision;
-    v_percent_normal            double precision;
-    v_percent_skewed            double precision;
-    v_total_delta_normal        double precision := 0;
-    v_total_delta_pnormal       double precision := 0;
-    v_total_delta_pskew         double precision := 0;
+    v_mode                      double precision;
+    v_concentration             double precision;
+    v_skew                      double precision;
+    v_total_delta_mode          double precision := 0;
+    v_total_delta_conc          double precision := 0;
+    v_total_delta_skew          double precision := 0;
     v_eff_min                   double precision;
     v_eff_max                   double precision;
-    v_eff_normal                double precision;
-    v_tmp                       double precision;
-    v_total_discrete_values     double precision;
-    v_random_uniform            double precision;
-    v_midpoint                  double precision;
-    v_skew_offset               double precision;
-    v_normal_offset             double precision;
-    v_degree_estimate           double precision;
-    v_mult                      double precision;
-    v_discrete_degree_estimate  double precision;
-    v_cubic_degree_estimate     double precision;
-    v_skewed                    double precision;
-    v_distributed               double precision;
-    v_multiplier                double precision;
-    v_avg                       double precision;
-    v_offset                    double precision;
+    v_eff_mode                  double precision;
     v_result                    double precision;
     v_clamped_result            double precision;
     v_chosen_span_id            integer;
@@ -461,10 +536,10 @@ BEGIN
            a.decimals,
            a.min_value,
            a.max_value,
-           a.normal_value,
-           a.percent_normal,
-           a.percent_skewed
-      INTO v_attribute_id, v_decimals, v_min, v_max, v_normal, v_percent_normal, v_percent_skewed
+           a.mode_value,
+           a.concentration,
+           a.skew
+      INTO v_attribute_id, v_decimals, v_min, v_max, v_mode, v_concentration, v_skew
       FROM variant_attribute va
       JOIN attribute a ON a.id = va.attribute_id
      WHERE va.id = p_variant_attribute_id
@@ -475,10 +550,10 @@ BEGIN
     END IF;
 
     -- Sum variation deltas.
-    SELECT COALESCE(SUM(vca.delta_normal), 0),
-           COALESCE(SUM(vca.delta_percent_normal), 0),
-           COALESCE(SUM(vca.delta_percent_skewed), 0)
-      INTO v_total_delta_normal, v_total_delta_pnormal, v_total_delta_pskew
+    SELECT COALESCE(SUM(vca.delta_mode), 0),
+           COALESCE(SUM(vca.delta_conc), 0),
+           COALESCE(SUM(vca.delta_skew), 0)
+      INTO v_total_delta_mode, v_total_delta_conc, v_total_delta_skew
       FROM variation_continuous_attr vca
       JOIN (
             SELECT v.id
@@ -489,51 +564,35 @@ BEGIN
                AND v.is_inactive = false
            ) av ON av.id = vca.variation_id;
 
-    -- Compute effective min, max and normal.
-    IF (v_total_delta_pnormal <> 0 OR v_total_delta_pskew <> 0) THEN
-        v_eff_min    := (v_min + v_total_delta_normal) * (1 + v_total_delta_pnormal + v_total_delta_pskew);
-        v_eff_max    := (v_max + v_total_delta_normal) * (1 + v_total_delta_pnormal + v_total_delta_pskew);
-        v_eff_normal := (v_normal + v_total_delta_normal) * (1 + v_total_delta_pnormal + v_total_delta_pskew);
+    -- Compute effective min, max and mode.
+    IF (v_total_delta_conc <> 0 OR v_total_delta_skew <> 0) THEN
+        v_eff_min    := (v_min + v_total_delta_mode) * (1 + v_total_delta_conc + v_total_delta_skew);
+        v_eff_max    := (v_max + v_total_delta_mode) * (1 + v_total_delta_conc + v_total_delta_skew);
+        v_eff_mode   := (v_mode + v_total_delta_mode) * (1 + v_total_delta_conc + v_total_delta_skew);
     ELSE
-        v_eff_min    := v_min + v_total_delta_normal;
-        v_eff_max    := v_max + v_total_delta_normal;
-        v_eff_normal := v_normal + v_total_delta_normal;
+        v_eff_min    := v_min + v_total_delta_mode;
+        v_eff_max    := v_max + v_total_delta_mode;
+        v_eff_mode   := v_mode + v_total_delta_mode;
     END IF;
 
     IF v_eff_max < v_eff_min THEN
-        v_tmp    := v_eff_min;
-        v_eff_min := v_eff_max;
-        v_eff_max := v_tmp;
+        -- Swap if needed.
+        v_result    := v_eff_min;
+        v_eff_min   := v_eff_max;
+        v_eff_max   := v_result;
     END IF;
 
-    -- Generate a skewed random number.
-    v_total_discrete_values := (v_eff_max - v_eff_min) * power(10, v_decimals) + 1;
-    IF v_total_discrete_values < 1 THEN 
-        v_total_discrete_values := 1; 
-    END IF;
-    v_random_uniform := random() * v_total_discrete_values;
-    v_midpoint       := v_total_discrete_values / 2;
-    v_skew_offset    := (-v_midpoint * COALESCE(v_percent_skewed, 0)) / 100;
-    v_normal_offset  := v_eff_normal - ((v_eff_max - v_eff_min) / 2) - v_eff_min;
-    IF v_percent_normal IS NULL OR v_percent_normal <= 0 THEN 
-        v_percent_normal := 0; 
-    END IF;
-    v_degree_estimate          := -2.3 / LN((v_percent_normal / 100) + 0.000052) - 0.5;
-    v_mult                     := floor(v_degree_estimate / 0.04);
-    v_discrete_degree_estimate := v_mult * 0.04;
-    v_cubic_degree_estimate    := 1 + 2 * v_discrete_degree_estimate;
-    v_skewed                   := v_random_uniform - v_midpoint - v_skew_offset;
-    v_distributed              := sign(v_skewed) * power(abs(v_skewed), v_cubic_degree_estimate);
-    IF (v_total_discrete_values - 2 * v_skew_offset * sign(v_skewed)) = 0 THEN
-        v_multiplier := 0;
-    ELSE
-        v_multiplier := ((v_eff_max - v_eff_min) * power(4, v_discrete_degree_estimate)) /
-                        power((v_total_discrete_values - 2 * v_skew_offset * sign(v_skewed)), v_cubic_degree_estimate);
-    END IF;
-    v_avg    := (v_eff_min + v_eff_max) / 2;
-    v_offset := ((-2 * v_normal_offset * v_multiplier * abs(v_distributed)) / (v_eff_max - v_eff_min))
-                + v_normal_offset + v_avg;
-    v_result := round((v_multiplier * v_distributed + v_offset)::numeric, v_decimals)::double precision;
+    -- Generate a weighted random value using the weighted_random function.
+    v_result := weighted_random(
+                   v_eff_min, 
+                   v_eff_max, 
+                   v_eff_mode, 
+                   COALESCE(v_skew, 0),
+                   COALESCE(v_concentration, 0)
+               );
+    v_result := round(v_result::numeric, v_decimals)::double precision;
+
+    -- Clamp the result to the effective min and max.
     IF v_result < v_eff_min THEN
         v_clamped_result := v_eff_min;
     ELSIF v_result > v_eff_max THEN
@@ -545,13 +604,13 @@ BEGIN
     -- Select the span matching the computed result.
     IF p_exclude_span_id IS NOT NULL AND p_exclude_span_id <> 0 THEN
         SELECT s.id,
-               CASE WHEN (v_total_delta_pnormal <> 0 OR v_total_delta_pskew <> 0)
-                    THEN (s.min_value + v_total_delta_normal) * (1 + v_total_delta_pnormal + v_total_delta_pskew)
-                    ELSE (s.min_value + v_total_delta_normal)
+               CASE WHEN (v_total_delta_conc <> 0 OR v_total_delta_skew <> 0)
+                    THEN (s.min_value + v_total_delta_mode) * (1 + v_total_delta_conc + v_total_delta_skew)
+                    ELSE (s.min_value + v_total_delta_mode)
                END,
-               CASE WHEN (v_total_delta_pnormal <> 0 OR v_total_delta_pskew <> 0)
-                    THEN (s.max_value + v_total_delta_normal) * (1 + v_total_delta_pnormal + v_total_delta_pskew)
-                    ELSE (s.max_value + v_total_delta_normal)
+               CASE WHEN (v_total_delta_conc <> 0 OR v_total_delta_skew <> 0)
+                    THEN (s.max_value + v_total_delta_mode) * (1 + v_total_delta_conc + v_total_delta_skew)
+                    ELSE (s.max_value + v_total_delta_mode)
                END
           INTO v_chosen_span_id, dummy_eff_min, dummy_eff_max
           FROM span s
@@ -560,24 +619,24 @@ BEGIN
            AND s.type = 'continuous'
            AND s.id <> p_exclude_span_id
            AND (p_variant_attr_variant_span_id IS NULL OR vas.id = p_variant_attr_variant_span_id)
-           AND (CASE WHEN (v_total_delta_pnormal <> 0 OR v_total_delta_pskew <> 0)
-                     THEN (s.min_value + v_total_delta_normal) * (1 + v_total_delta_pnormal + v_total_delta_pskew)
-                     ELSE (s.min_value + v_total_delta_normal)
+           AND (CASE WHEN (v_total_delta_conc <> 0 OR v_total_delta_skew <> 0)
+                     THEN (s.min_value + v_total_delta_mode) * (1 + v_total_delta_conc + v_total_delta_skew)
+                     ELSE (s.min_value + v_total_delta_mode)
                 END) <= v_clamped_result
-           AND (CASE WHEN (v_total_delta_pnormal <> 0 OR v_total_delta_pskew <> 0)
-                     THEN (s.max_value + v_total_delta_normal) * (1 + v_total_delta_pnormal + v_total_delta_pskew)
-                     ELSE (s.max_value + v_total_delta_normal)
+           AND (CASE WHEN (v_total_delta_conc <> 0 OR v_total_delta_skew <> 0)
+                     THEN (s.max_value + v_total_delta_mode) * (1 + v_total_delta_conc + v_total_delta_skew)
+                     ELSE (s.max_value + v_total_delta_mode)
                 END) > v_clamped_result
          LIMIT 1;
     ELSE
         SELECT s.id,
-               CASE WHEN (v_total_delta_pnormal <> 0 OR v_total_delta_pskew <> 0)
-                    THEN (s.min_value + v_total_delta_normal) * (1 + v_total_delta_pnormal + v_total_delta_pskew)
-                    ELSE (s.min_value + v_total_delta_normal)
+               CASE WHEN (v_total_delta_conc <> 0 OR v_total_delta_skew <> 0)
+                    THEN (s.min_value + v_total_delta_mode) * (1 + v_total_delta_conc + v_total_delta_skew)
+                    ELSE (s.min_value + v_total_delta_mode)
                END,
-               CASE WHEN (v_total_delta_pnormal <> 0 OR v_total_delta_pskew <> 0)
-                    THEN (s.max_value + v_total_delta_normal) * (1 + v_total_delta_pnormal + v_total_delta_pskew)
-                    ELSE (s.max_value + v_total_delta_normal)
+               CASE WHEN (v_total_delta_conc <> 0 OR v_total_delta_skew <> 0)
+                    THEN (s.max_value + v_total_delta_mode) * (1 + v_total_delta_conc + v_total_delta_skew)
+                    ELSE (s.max_value + v_total_delta_mode)
                END
           INTO v_chosen_span_id, dummy_eff_min, dummy_eff_max
           FROM span s
@@ -585,13 +644,13 @@ BEGIN
          WHERE s.attribute_id = v_attribute_id
            AND s.type = 'continuous'
            AND (p_variant_attr_variant_span_id IS NULL OR vas.id = p_variant_attr_variant_span_id)
-           AND (CASE WHEN (v_total_delta_pnormal <> 0 OR v_total_delta_pskew <> 0)
-                     THEN (s.min_value + v_total_delta_normal) * (1 + v_total_delta_pnormal + v_total_delta_pskew)
-                     ELSE (s.min_value + v_total_delta_normal)
+           AND (CASE WHEN (v_total_delta_conc <> 0 OR v_total_delta_skew <> 0)
+                     THEN (s.min_value + v_total_delta_mode) * (1 + v_total_delta_conc + v_total_delta_skew)
+                     ELSE (s.min_value + v_total_delta_mode)
                 END) <= v_clamped_result
-           AND (CASE WHEN (v_total_delta_pnormal <> 0 OR v_total_delta_pskew <> 0)
-                     THEN (s.max_value + v_total_delta_normal) * (1 + v_total_delta_pnormal + v_total_delta_pskew)
-                     ELSE (s.max_value + v_total_delta_normal)
+           AND (CASE WHEN (v_total_delta_conc <> 0 OR v_total_delta_skew <> 0)
+                     THEN (s.max_value + v_total_delta_mode) * (1 + v_total_delta_conc + v_total_delta_skew)
+                     ELSE (s.max_value + v_total_delta_mode)
                 END) > v_clamped_result
          LIMIT 1;
     END IF;

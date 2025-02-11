@@ -10,9 +10,9 @@ CREATE TABLE attribute (
     has_value boolean,
     max_value double precision,
     min_value double precision,
-    normal_value double precision,
-    percent_normal double precision,
-    percent_skewed double precision,
+    mode_value double precision,
+    concentration double precision,
+    skew double precision,
     units varchar(255),
     CHECK (
         max_value IS NULL
@@ -27,9 +27,9 @@ CREATE TABLE attribute (
             AND has_value IS NULL
             AND max_value IS NULL
             AND min_value IS NULL
-            AND normal_value IS NULL
-            AND percent_normal IS NULL
-            AND percent_skewed IS NULL
+            AND mode_value IS NULL
+            AND concentration IS NULL
+            AND skew IS NULL
             AND units IS NULL
         )
         OR (
@@ -39,9 +39,9 @@ CREATE TABLE attribute (
             AND has_value IS NOT NULL
             AND max_value IS NOT NULL
             AND min_value IS NOT NULL
-            AND normal_value IS NOT NULL
-            AND percent_normal IS NOT NULL
-            AND percent_skewed IS NOT NULL
+            AND mode_value IS NOT NULL
+            AND concentration IS NOT NULL
+            AND skew IS NOT NULL
         )
     )
 );
@@ -126,9 +126,9 @@ CREATE TABLE variation (
 CREATE TABLE variation_continuous_attr (
     id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     variation_id integer NOT NULL,
-    delta_normal double precision NOT NULL,
-    delta_percent_normal double precision NOT NULL,
-    delta_percent_skewed double precision NOT NULL,
+    delta_mode double precision NOT NULL,
+    delta_conc double precision NOT NULL,
+    delta_skew double precision NOT NULL,
     CONSTRAINT fk_var_continuous_attr_var FOREIGN KEY (variation_id) REFERENCES variation (id) ON DELETE CASCADE
 );
 
