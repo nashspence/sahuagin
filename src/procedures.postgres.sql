@@ -279,13 +279,6 @@ DECLARE
     v_span_id INTEGER;
     v_max_double constant double precision := 1e308;
 BEGIN
-    PERFORM debug_log(
-        'roll_discrete_varattr',
-        'Start: p_variant_attribute_id=' || p_variant_attribute_id ||
-        ', p_variant_attr_variant_span_id=' || p_variant_attr_variant_span_id ||
-        ', p_exclude_span_id=' || p_exclude_span_id
-    );
-
     WITH
     BaseSpans AS (
          SELECT s.id AS span_id, 
@@ -413,11 +406,6 @@ BEGIN
         AND Rng.v_random_pick < o.running_total
       LIMIT 1;
 
-    PERFORM debug_log(
-        'roll_discrete_varattr',
-        'Chosen v_span_id=' || COALESCE(v_span_id::text, 'NULL')
-    );
-
     RETURN v_span_id;
 END;
 $$;
@@ -468,13 +456,6 @@ DECLARE
     dummy_eff_min               double precision;
     dummy_eff_max               double precision;
 BEGIN
-    PERFORM debug_log(
-        'roll_continuous_varattr',
-        'Start: p_variant_attribute_id=' || p_variant_attribute_id ||
-        ', p_variant_attr_variant_span_id=' || p_variant_attr_variant_span_id ||
-        ', p_exclude_span_id=' || p_exclude_span_id
-    );
-
     -- Retrieve attribute details.
     SELECT va.attribute_id,
            a.decimals,
@@ -493,11 +474,6 @@ BEGIN
         RAISE EXCEPTION 'No matching attribute found';
     END IF;
 
-    PERFORM debug_log(
-        'roll_continuous_varattr',
-        'Retrieved attribute details: attribute_id=' || v_attribute_id || ', decimals=' || v_decimals
-    );
-
     -- Sum variation deltas.
     SELECT COALESCE(SUM(vca.delta_normal), 0),
            COALESCE(SUM(vca.delta_percent_normal), 0),
@@ -513,13 +489,6 @@ BEGIN
                AND v.is_inactive = false
            ) av ON av.id = vca.variation_id;
 
-    PERFORM debug_log(
-        'roll_continuous_varattr',
-        'Variation deltas: total_delta_normal=' || v_total_delta_normal ||
-        ', total_delta_pnormal=' || v_total_delta_pnormal ||
-        ', total_delta_pskew=' || v_total_delta_pskew
-    );
-
     -- Compute effective min, max and normal.
     IF (v_total_delta_pnormal <> 0 OR v_total_delta_pskew <> 0) THEN
         v_eff_min    := (v_min + v_total_delta_normal) * (1 + v_total_delta_pnormal + v_total_delta_pskew);
@@ -530,11 +499,6 @@ BEGIN
         v_eff_max    := v_max + v_total_delta_normal;
         v_eff_normal := v_normal + v_total_delta_normal;
     END IF;
-
-    PERFORM debug_log(
-        'roll_continuous_varattr',
-        'Effective values: eff_min=' || v_eff_min || ', eff_max=' || v_eff_max || ', eff_normal=' || v_eff_normal
-    );
 
     IF v_eff_max < v_eff_min THEN
         v_tmp    := v_eff_min;
@@ -577,11 +541,6 @@ BEGIN
     ELSE
         v_clamped_result := v_result;
     END IF;
-
-    PERFORM debug_log(
-        'roll_continuous_varattr',
-        'Computed v_clamped_result=' || v_clamped_result
-    );
 
     -- Select the span matching the computed result.
     IF p_exclude_span_id IS NOT NULL AND p_exclude_span_id <> 0 THEN
@@ -637,18 +596,8 @@ BEGIN
          LIMIT 1;
     END IF;
 
-    PERFORM debug_log(
-        'roll_continuous_varattr',
-        'Chosen continuous: span_id=' || COALESCE(v_chosen_span_id::text, 'NULL') ||
-        ', numeric_value=' || COALESCE(v_clamped_result::text, 'NULL')
-    );
-
     chosen_span_id := v_chosen_span_id;
     chosen_value   := v_clamped_result;
-    PERFORM debug_log(
-        'roll_continuous_varattr',
-        'Exiting with chosen_span_id=' || chosen_span_id || ', chosen_value=' || chosen_value
-    );
     RETURN NEXT;
     RETURN;
 END;
@@ -660,8 +609,7 @@ $$;
 CREATE OR REPLACE PROCEDURE generate_entity_state(
     IN  p_entity_id                  INTEGER,
     IN  p_time                       DOUBLE PRECISION,
-    IN  p_regenerate_entity_state_id INTEGER,
-    OUT out_entity_state_id          INTEGER
+    IN  p_regenerate_entity_state_id INTEGER
 )
 LANGUAGE plpgsql
 AS $$
@@ -680,15 +628,9 @@ DECLARE
     v_used_span_id          INTEGER;
     v_sub_variant_id        INTEGER;
     v_attr_counter          INTEGER := 0;
+    v_queue_id              INTEGER;  -- new variable for stack (LIFO) ordering
     rec                     RECORD;
 BEGIN
-    PERFORM debug_log(
-        'generate_entity_state',
-        'Start: p_entity_id=' || p_entity_id ||
-        ', p_time=' || p_time ||
-        ', p_regenerate_entity_state_id=' || COALESCE(p_regenerate_entity_state_id::text, 'NULL')
-    );
-
     -- Get the root variant.
     SELECT variant_id
       INTO v_root_variant_id
@@ -697,10 +639,6 @@ BEGIN
     IF v_root_variant_id IS NULL THEN
        RAISE EXCEPTION 'No entity found with id=%', p_entity_id;
     END IF;
-    PERFORM debug_log(
-        'generate_entity_state',
-        'Root variant id=' || v_root_variant_id
-    );
 
     -- Use supplied state id (regeneration) or insert a new entity_state.
     IF p_regenerate_entity_state_id IS NOT NULL THEN
@@ -710,22 +648,14 @@ BEGIN
         VALUES (p_entity_id, p_time)
         RETURNING id INTO v_entity_state_id;
     END IF;
-    out_entity_state_id := v_entity_state_id;
-    PERFORM debug_log(
-        'generate_entity_state',
-        'Entity state id=' || v_entity_state_id
-    );
 
-    -- Create temporary queue table.
+    -- Create temporary stack table for variant processing (depth-first).
     DROP TABLE IF EXISTS _variant_queue;
     CREATE TEMPORARY TABLE _variant_queue (
-        variant_id INTEGER PRIMARY KEY
+        queue_id serial PRIMARY KEY,
+        variant_id INTEGER UNIQUE
     ) ON COMMIT DROP;
     INSERT INTO _variant_queue (variant_id) VALUES (v_root_variant_id);
-    PERFORM debug_log(
-        'generate_entity_state',
-        'Inserted root variant into queue.'
-    );
 
     -- Create temporary table for variant attributes.
     DROP TABLE IF EXISTS _variant_attributes;
@@ -734,19 +664,16 @@ BEGIN
         attr_type TEXT
     ) ON COMMIT DROP;
 
-    -- Process the variant queue.
+    -- Process the variant stack.
     LOOP
-        SELECT variant_id
-          INTO v_current_variant
+        SELECT queue_id, variant_id
+          INTO v_queue_id, v_current_variant
           FROM _variant_queue
+         ORDER BY queue_id DESC
          LIMIT 1;
         EXIT WHEN NOT FOUND;
-        PERFORM debug_log(
-            'generate_entity_state',
-            'Processing variant id=' || v_current_variant
-        );
         DELETE FROM _variant_queue
-         WHERE variant_id = v_current_variant;
+         WHERE queue_id = v_queue_id;
 
         TRUNCATE _variant_attributes;
         INSERT INTO _variant_attributes (va_id, attr_type)
@@ -759,14 +686,9 @@ BEGIN
         FOR rec IN
             SELECT va_id, attr_type FROM _variant_attributes
         LOOP
-            cur_va_id    := rec.va_id;
-            cur_attr_type:= rec.attr_type;
+            cur_va_id     := rec.va_id;
+            cur_attr_type := rec.attr_type;
             v_attr_counter := v_attr_counter + 1;
-            PERFORM debug_log(
-                'generate_entity_state',
-                'Processing attribute ' || v_attr_counter ||
-                ': va_id=' || cur_va_id || ', attr_type=' || cur_attr_type
-            );
 
             -- Get the variant_attr_span id; if none, it will remain null.
             SELECT id
@@ -775,11 +697,6 @@ BEGIN
              WHERE variant_attribute_id = cur_va_id
                AND variant_id = v_current_variant
              LIMIT 1;
-            PERFORM debug_log(
-                'generate_entity_state',
-                'Variant_attr_span id for va_id=' || cur_va_id ||
-                ' is ' || COALESCE(v_variant_attr_span_id::text, 'NULL')
-            );
 
             IF p_regenerate_entity_state_id IS NOT NULL THEN
                 SELECT id, span_id
@@ -788,11 +705,6 @@ BEGIN
                  WHERE entity_state_id = v_entity_state_id
                    AND variant_attribute_id = cur_va_id
                  LIMIT 1;
-                PERFORM debug_log(
-                    'generate_entity_state',
-                    'Existing evav: id=' || COALESCE(v_existing_evav_id::text, 'NULL') ||
-                    ', span_id=' || COALESCE(v_existing_span_id::text, 'NULL')
-                );
             ELSE
                 v_existing_evav_id := NULL;
                 v_existing_span_id := NULL;
@@ -802,17 +714,8 @@ BEGIN
                 SELECT count(*) INTO v_lock_count
                   FROM evav_lock
                  WHERE locked_evav_id = v_existing_evav_id;
-                PERFORM debug_log(
-                    'generate_entity_state',
-                    'Lock count for evav id=' || v_existing_evav_id ||
-                    ' is ' || v_lock_count
-                );
                 IF v_lock_count > 0 THEN
                     v_used_span_id := v_existing_span_id;
-                    PERFORM debug_log(
-                        'generate_entity_state',
-                        'Using locked span id=' || v_used_span_id
-                    );
                 ELSE
                     IF cur_attr_type = 'discrete' THEN
                         v_new_span_id := roll_discrete_varattr(cur_va_id, v_variant_attr_span_id, 0);
@@ -820,11 +723,6 @@ BEGIN
                            SET span_id = v_new_span_id
                          WHERE id = v_existing_evav_id;
                         v_used_span_id := v_new_span_id;
-                        PERFORM debug_log(
-                            'generate_entity_state',
-                            'Updated discrete evav id=' || v_existing_evav_id ||
-                            ' with new span id=' || v_new_span_id
-                        );
                     ELSE
                         SELECT t.chosen_span_id, t.chosen_value
                           INTO v_new_span_id, v_new_numeric
@@ -835,12 +733,6 @@ BEGIN
                                numeric_value = v_new_numeric
                          WHERE id = v_existing_evav_id;
                         v_used_span_id := v_new_span_id;
-                        PERFORM debug_log(
-                            'generate_entity_state',
-                            'Updated continuous evav id=' || v_existing_evav_id ||
-                            ' with new span id=' || v_new_span_id ||
-                            ' and numeric_value=' || v_new_numeric
-                        );
                     END IF;
                 END IF;
             ELSE
@@ -858,10 +750,6 @@ BEGIN
                         cur_va_id
                     );
                     v_used_span_id := v_new_span_id;
-                    PERFORM debug_log(
-                        'generate_entity_state',
-                        'Inserted discrete evav with span id=' || v_new_span_id
-                    );
                 ELSE
                     SELECT t.chosen_span_id, t.chosen_value
                       INTO v_new_span_id, v_new_numeric
@@ -879,11 +767,6 @@ BEGIN
                         cur_va_id
                     );
                     v_used_span_id := v_new_span_id;
-                    PERFORM debug_log(
-                        'generate_entity_state',
-                        'Inserted continuous evav with span id=' || v_new_span_id ||
-                        ' and numeric_value=' || v_new_numeric
-                    );
                 END IF;
             END IF;
 
@@ -898,23 +781,15 @@ BEGIN
                 INSERT INTO _variant_queue (variant_id)
                 VALUES (v_sub_variant_id)
                 ON CONFLICT (variant_id) DO NOTHING;
-                PERFORM debug_log(
-                    'generate_entity_state',
-                    'Enqueued sub variant id=' || v_sub_variant_id ||
-                    ' from va_id=' || cur_va_id
-                );
             END IF;
         END LOOP;
     END LOOP;
 
     DROP TABLE IF EXISTS _variant_attributes;
     DROP TABLE IF EXISTS _variant_queue;
-    PERFORM debug_log(
-        'generate_entity_state',
-        'Completed processing for entity state id=' || v_entity_state_id
-    );
 END;
 $$;
+
 
 --#endregion
 --#region "generate_entity_states_in_range"
@@ -935,6 +810,188 @@ BEGIN
     LOOP
         CALL generate_entity_state(p_entity_id, v_time, NULL, v_entity_state_id);
     END LOOP;
+END;
+$$;
+
+--#endregion
+--#region "get_entity_state_details"
+
+DROP TYPE IF EXISTS entity_state_details CASCADE;
+CREATE TYPE entity_state_details AS (
+  "Index"                   BIGINT,
+  "Attribute"               VARCHAR(255),
+  "Value"                   DOUBLE PRECISION,
+  "Units"                   VARCHAR(255),
+  "Label"                   VARCHAR(255),
+  "Active Variations"       JSONB,
+  "Caused Variant"          VARCHAR(255),
+  "Locked"                  BOOLEAN
+);
+
+-- Main function: given an entity id, return one row per generated variant attribute value,
+-- ordered by the effective causation order (i.e. the depth–first order in which
+-- generate_entity_state processed them). The returned columns are:
+--
+--   state_time                -- the time stamp of the entity state
+--   effective_causation_index -- the effective index (computed via depth–first traversal)
+--   variant_attribute_name    -- the name of the variant attribute (from variant_attribute.name)
+--   variant_name              -- the name of the variant that “owns” that attribute
+--   numeric_value             -- the numeric value (if any, for continuous attributes)
+--   span_label                -- the label of the chosen span (if any)
+--   active_variations         -- a JSON object mapping “span addresses” (from ancestors that activated a variation)
+--                               to arrays of variation details (including any sub–variant name activated)
+--   sub_variant_name          -- if the chosen span activated a sub–variant, its name (else null)
+--   is_locked                 -- whether this entity_varattr_value is locked
+CREATE OR REPLACE FUNCTION get_entity_state_details(
+    p_entity_id INT,
+    p_time      DOUBLE PRECISION
+)
+RETURNS SETOF entity_state_details
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RETURN QUERY
+  WITH RECURSIVE 
+  -- Compute a per–variant sibling order using causation_index.
+  ordered_va AS (
+    SELECT
+      va.id AS variant_attribute_id,
+      va.variant_id,
+      va.attribute_id,
+      va.name,
+      va.causation_index,
+      ROW_NUMBER() OVER (PARTITION BY va.variant_id ORDER BY va.causation_index) AS sibling_order
+    FROM variant_attribute va
+  ),
+  --
+  -- Build the processing tree while computing two “paths”:
+  --
+  --   * attribute_path – the flattened path using "/" as separator and not including the span label.
+  --     For example: Human/Male/Irish/Hair Color
+  --
+  --   * json_full_address – same as attribute_path, except that if a span label exists it is appended
+  --     with a colon (e.g. Human/Male/Irish/Hair Color:Red). This is used as the key in Active Variations.
+  --
+  ev_tree AS (
+    -- Anchor: start with the entity state’s root variant.
+    SELECT
+      es."time" AS state_time,
+      ev.id AS ev_id,
+      ev.entity_state_id,
+      ov.variant_attribute_id,
+      v.name || '/' || ov.name AS attribute_path,
+      v.name || '/' || ov.name || COALESCE(':' || s.label, '') AS json_full_address,
+      v.id AS variant_id,
+      v.name AS variant_name,
+      ev.numeric_value,
+      a.units,
+      ev.span_id,
+      s.label AS span_label,
+      vas.variant_id AS activated_sub_variant,
+      ARRAY[ ov.sibling_order ] AS proc_path
+    FROM entity_state es
+    JOIN entity e ON es.entity_id = e.id
+    JOIN variant v ON e.variant_id = v.id
+    JOIN entity_varattr_value ev ON ev.entity_state_id = es.id
+    JOIN ordered_va ov ON ov.variant_attribute_id = ev.variant_attribute_id
+    JOIN attribute a ON a.id = ov.attribute_id
+    LEFT JOIN span s ON ev.span_id = s.id
+    LEFT JOIN variant_attr_span vas 
+           ON vas.id = ev.span_id
+          AND vas.variant_attribute_id = ov.variant_attribute_id
+    WHERE e.id = p_entity_id
+      AND es."time" = p_time
+      AND ov.variant_id = v.id
+
+    UNION ALL
+
+    -- Recursive step: for any attribute that activated a sub–variant,
+    -- process the sub–variant’s attributes.
+    SELECT
+      parent.state_time,
+      ev.id AS ev_id,
+      ev.entity_state_id,
+      ov.variant_attribute_id,
+      parent.attribute_path || '/' || ov.name AS attribute_path,
+      parent.json_full_address || '/' || ov.name || COALESCE(':' || s.label, '') AS json_full_address,
+      v_child.id AS variant_id,
+      v_child.name AS variant_name,
+      ev.numeric_value,
+      a.units,
+      ev.span_id,
+      s.label AS span_label,
+      vas.variant_id AS activated_sub_variant,
+      parent.proc_path || ov.sibling_order AS proc_path
+    FROM ev_tree parent
+    JOIN entity_varattr_value ev ON ev.entity_state_id = parent.entity_state_id
+    JOIN ordered_va ov ON ov.variant_attribute_id = ev.variant_attribute_id
+    JOIN variant v_child ON ov.variant_id = v_child.id
+    JOIN attribute a ON a.id = ov.attribute_id
+    LEFT JOIN span s ON ev.span_id = s.id
+    LEFT JOIN variant_attr_span vas 
+           ON vas.id = ev.span_id
+          AND vas.variant_attribute_id = ov.variant_attribute_id
+    WHERE parent.activated_sub_variant IS NOT NULL
+      AND ov.variant_id = parent.activated_sub_variant
+  ),
+  --
+  -- Index the tree by ordering lexicographically on proc_path.
+  ev_indexed AS (
+    SELECT ev.*,
+           row_number() OVER (ORDER BY ev.proc_path) AS effective_causation_index
+    FROM ev_tree ev
+  )
+  --
+  -- Final select: return one row per processed attribute value.
+  SELECT 
+    ev.effective_causation_index::bigint AS "Index",
+    ev.attribute_path::varchar(255) AS "Attribute",
+    ev.numeric_value::double precision AS "Value",
+    ev.units::varchar(255) AS "Units",
+    ev.span_label::varchar(255) AS "Label",
+    (
+      SELECT COALESCE(
+        jsonb_object_agg(anc_variations.json_full_address, anc_variations.variations_array),
+        '{}'::jsonb
+      )
+      FROM (
+        SELECT
+          anc.json_full_address,
+          jsonb_agg(
+            jsonb_build_object(
+              'variation_id', v.id,
+              'is_inactive', v.is_inactive,
+              'variation_continuous_attr', CASE WHEN vca.id IS NOT NULL THEN to_jsonb(vca) ELSE NULL END,
+              'variation_activated_span', CASE WHEN vas2.id IS NOT NULL THEN to_jsonb(vas2) ELSE NULL END,
+              'variation_delta_weight', CASE WHEN vd.id IS NOT NULL THEN to_jsonb(vd) ELSE NULL END,
+              'variation_inactive_span', CASE WHEN vi.id IS NOT NULL THEN to_jsonb(vi) ELSE NULL END
+            )
+          ) AS variations_array
+        FROM ev_indexed anc
+        JOIN variation v ON v.activating_span_id = anc.span_id
+        LEFT JOIN variation_continuous_attr vca ON vca.variation_id = v.id
+        LEFT JOIN variation_activated_span vas2 ON vas2.variation_id = v.id
+        LEFT JOIN variation_delta_weight vd ON vd.variation_id = v.id
+        LEFT JOIN variation_inactive_span vi ON vi.variation_id = v.id
+        WHERE anc.effective_causation_index < ev.effective_causation_index
+          AND anc.span_id IS NOT NULL
+        GROUP BY anc.json_full_address
+      ) anc_variations
+    ) AS "Active Variations",
+    (
+      CASE 
+        WHEN ev.activated_sub_variant IS NOT NULL THEN
+           (SELECT v2.name FROM variant v2 WHERE v2.id = ev.activated_sub_variant)
+        ELSE NULL
+      END
+    )::varchar(255) AS "Caused Variant",
+    EXISTS (
+      SELECT 1 
+      FROM evav_lock 
+      WHERE locked_evav_id = ev.ev_id
+    ) AS "Locked"
+  FROM ev_indexed ev
+  ORDER BY ev.effective_causation_index;
 END;
 $$;
 

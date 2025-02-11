@@ -197,93 +197,63 @@ CREATE TABLE debug_log (
     log_message text
 );
 
+
+
 CREATE INDEX idx_attribute_name ON attribute (name);
-
 CREATE INDEX idx_span_attribute_id ON span (attribute_id);
-
 CREATE INDEX idx_span_attribute_type ON span(attribute_id, type, id);
-
 CREATE INDEX idx_span_attr_type ON span(attribute_id, type, min_value, max_value);
-
 CREATE INDEX idx_span_attr_type_pinned ON span(attribute_id, type, is_percentage_pinned);
-
 CREATE INDEX idx_span_attr_type_pinned_wl ON span(attribute_id, type, is_percentage_pinned, weight, label);
-
 CREATE INDEX idx_variant_name ON variant (name);
-
 CREATE INDEX idx_variant_attribute_attribute ON variant_attribute (attribute_id);
-
 CREATE INDEX idx_variant_attribute_variant ON variant_attribute (variant_id);
-
 CREATE INDEX idx_variant_attribute_variant_causation ON variant_attribute (variant_id, causation_index);
-
 CREATE INDEX idx_variant_attr_span_span_id ON variant_attr_span (span_id);
-
 CREATE INDEX idx_variant_attr_span_variant_attribute_id ON variant_attr_span (variant_attribute_id);
-
 CREATE INDEX idx_variant_attr_span_variant_attr ON variant_attr_span (
     variant_id,
     variant_attribute_id
 );
-
 CREATE INDEX idx_variant_attr_span_vaid_spanid ON variant_attr_span (variant_attribute_id, span_id);
-
 CREATE INDEX idx_variant_attr_span_vaid_variant ON variant_attr_span (
     variant_attribute_id,
     variant_id
 );
-
 CREATE INDEX idx_vavspan_attr_variant_attribute ON vavspan_attr (variant_attribute_id);
-
 CREATE INDEX idx_vavspan_attr_vaid ON vavspan_attr (variant_attribute_id, id);
-
 CREATE INDEX idx_uq_vavspan_attr ON vavspan_attr (
     variant_attribute_id,
     variant_attr_span_id
 );
-
 CREATE INDEX idx_var_cont_variation ON variation_continuous_attr (variation_id);
-
 CREATE INDEX idx_variation_activated_span_varid_spanid ON variation_activated_span (variation_id, span_id);
-
 CREATE INDEX idx_variation_inactive ON variation_inactive_span (variation_id, span_id);
-
 CREATE INDEX idx_variation_delta_weight_varid_spanid ON variation_delta_weight (variation_id, span_id);
-
 CREATE INDEX idx_variation_delta ON variation_delta_weight (
     variation_id,
     span_id,
     delta_weight
 );
-
 CREATE INDEX idx_variation_is_inactive ON variation (is_inactive, id);
-
 CREATE INDEX idx_variation_to_modify_inactive ON variation (
     to_modify_vavspan_attr_id,
     is_inactive
 );
-
 CREATE INDEX idx_entity_state_entity_id ON entity_state (entity_id);
-
 CREATE INDEX idx_entity_state_entity_time ON entity_state (entity_id, time);
-
 CREATE INDEX idx_entity_varattr_value_entity_state_id ON entity_varattr_value (entity_state_id);
-
 CREATE INDEX idx_evav_state_vaid ON entity_varattr_value (
     entity_state_id,
     variant_attribute_id
 );
-
 CREATE INDEX idx_evav_state_attr_span ON entity_varattr_value (
     entity_state_id,
     variant_attribute_id,
     span_id
 );
-
 CREATE INDEX idx_evav_lock_locked ON evav_lock (locked_evav_id);
-
 CREATE INDEX idx_evav_lock_locking ON evav_lock (locking_evav_id);
-
 CREATE INDEX idx_evav_lock_locked_locking ON evav_lock (
     locked_evav_id,
     locking_evav_id
