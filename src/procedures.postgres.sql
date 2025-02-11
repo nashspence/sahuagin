@@ -792,28 +792,6 @@ $$;
 
 
 --#endregion
---#region "generate_entity_states_in_range"
-
-CREATE OR REPLACE PROCEDURE generate_entity_states_in_range(
-    p_entity_id INTEGER,
-    p_start_time INTEGER,
-    p_end_time INTEGER,
-    p_time_step INTEGER
-)
-LANGUAGE plpgsql AS $$
-DECLARE
-    v_time INTEGER;
-    v_entity_state_id INTEGER;
-BEGIN
-    FOR v_time IN
-        SELECT generate_series(p_start_time, p_end_time, p_time_step)
-    LOOP
-        CALL generate_entity_state(p_entity_id, v_time, NULL, v_entity_state_id);
-    END LOOP;
-END;
-$$;
-
---#endregion
 --#region "get_entity_state_details"
 
 DROP TYPE IF EXISTS entity_state_details CASCADE;
@@ -993,6 +971,94 @@ BEGIN
   FROM ev_indexed ev
   ORDER BY ev.effective_causation_index;
 END;
+$$;
+
+--#endregion
+--#region "generate_entity_group"
+
+CREATE OR REPLACE PROCEDURE generate_entities_in_group(
+    p_variant_id           INTEGER,
+    p_group_name           VARCHAR,
+    p_entity_name_template VARCHAR,
+    p_num_entities         INTEGER,
+    OUT out_entity_group_id INT
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_entity_group_id  INTEGER;
+    v_entity_id        INTEGER;
+    v_entity_state_id  INTEGER;
+    v_idx              INTEGER;
+    v_entity_name      VARCHAR(255);
+BEGIN
+    INSERT INTO entity_group (name)
+    VALUES (p_group_name)
+    RETURNING id INTO v_entity_group_id;
+
+    out_entity_group_id := v_entity_group_id;
+
+    FOR v_idx IN 1..p_num_entities LOOP
+        v_entity_name := format(p_entity_name_template, v_idx);
+
+        INSERT INTO entity (variant_id, name)
+        VALUES (p_variant_id, v_entity_name)
+        RETURNING id INTO v_entity_id;
+
+        INSERT INTO entity_group_link (entity_id, entity_group_id)
+        VALUES (v_entity_id, v_entity_group_id);
+
+        CALL generate_entity_state(v_entity_id, 0, NULL);
+    END LOOP;
+END;
+$$;
+
+--#endregion
+--#region "get_entity_group_state_details"
+
+CREATE OR REPLACE FUNCTION get_entity_group_state_details(
+    p_entity_group_id INT
+)
+RETURNS TEXT
+LANGUAGE sql
+AS $$
+  SELECT jsonb_pretty(
+           COALESCE(
+             jsonb_object_agg(e.name, details),
+             '{}'::jsonb
+           )
+         )
+  FROM (
+    SELECT e.name,
+           (
+             SELECT jsonb_agg(
+                      jsonb_strip_nulls(
+                        jsonb_build_object(
+                          'Attribute', d."Attribute",
+                          'Value', CASE 
+                                     WHEN d."Value" IS NOT NULL 
+                                       THEN CASE 
+                                              WHEN d."Units" IS NOT NULL 
+                                                THEN d."Value"::text || ' ' || d."Units"
+                                              ELSE d."Value"::text
+                                            END
+                                     ELSE NULL
+                                   END,
+                          'Label', d."Label",
+                          'Active Variations', CASE 
+                                                 WHEN d."Active Variations" = '{}'::jsonb THEN NULL 
+                                                 ELSE d."Active Variations" 
+                                               END,
+                          'Caused Variant', d."Caused Variant",
+                          'Locked', CASE WHEN d."Locked" THEN d."Locked" ELSE NULL END
+                        )
+                      )
+                    )
+             FROM get_entity_state_details(e.id, 0) AS d
+           ) AS details
+    FROM entity e
+    JOIN entity_group_link egl ON e.id = egl.entity_id
+    WHERE egl.entity_group_id = p_entity_group_id
+  ) e;
 $$;
 
 --#endregion

@@ -164,11 +164,25 @@ CREATE TABLE entity (
     CONSTRAINT fk_entity_variant FOREIGN KEY (variant_id) REFERENCES variant (id) ON DELETE CASCADE
 );
 
+CREATE TABLE entity_group (
+    id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name varchar(255) NOT NULL
+);
+
+CREATE TABLE entity_group_link (
+    id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    entity_id integer NOT NULL,
+    entity_group_id integer NOT NULL,
+    CONSTRAINT fk_entity FOREIGN KEY (entity_id) REFERENCES entity (id) ON DELETE CASCADE,
+    CONSTRAINT fk_entity_group FOREIGN KEY (entity_group_id) REFERENCES entity_group (id) ON DELETE CASCADE
+);
+
 CREATE TABLE entity_state (
     id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     entity_id integer NOT NULL,
-    time double precision NOT NULL UNIQUE,
-    CONSTRAINT fk_entity FOREIGN KEY (entity_id) REFERENCES entity (id) ON DELETE CASCADE
+    time double precision NOT NULL,
+    CONSTRAINT fk_entity FOREIGN KEY (entity_id) REFERENCES entity (id) ON DELETE CASCADE,
+    CONSTRAINT unique_entity_time UNIQUE (entity_id, time)
 );
 
 CREATE TABLE entity_varattr_value (
@@ -258,3 +272,5 @@ CREATE INDEX idx_evav_lock_locked_locking ON evav_lock (
     locked_evav_id,
     locking_evav_id
 );
+CREATE INDEX idx_entity_group_link_group_id_entity_id
+  ON entity_group_link(entity_group_id, entity_id);
