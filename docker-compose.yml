@@ -1,22 +1,11 @@
 services:
-  postgres:
-    container_name: postgres
-    environment:
-      - POSTGRES_PASSWORD=test
-      - POSTGRES_DB=sahuagin
-      - TZ=America/Los_Angeles
-    ports:
-      - "5432:5432"
-    image: postgres:latest
-    restart: unless-stopped
-    volumes:
-      - ./bind-mounts/postgres:/var/lib/postgresql/data
   jupyter:
     container_name: jupyter
     image: quay.io/jupyter/datascience-notebook:latest
     restart: unless-stopped
     ports:
       - "8888:8888"
+      - "5432:5432"
     environment:
       - GRANT_SUDO=yes
       - TZ=America/Los_Angeles
@@ -24,8 +13,6 @@ services:
       - JUPYTER_TOKEN=565b05d8e36db32dd714c96d6ef4b523c97107f9ceccc2c5
     volumes:
       - ./bind-mounts/jupyter/home:/home/jovyan
-    depends_on:
-      - postgres
     stdin_open: true
     tty: true
     user: root

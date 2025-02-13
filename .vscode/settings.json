@@ -5,10 +5,10 @@
             "server": "localhost",
             "port": 5432,
             "driver": "PostgreSQL",
-            "name": "sahuagin",
+            "name": "Jupyter Notebook",
             "database": "sahuagin",
-            "username": "postgres",
-            "password": "test"
+            "username": "notebook",
+            "password": ""
         }
     ]
 }
