@@ -10,8 +10,6 @@
 				"ms-azuretools.vscode-docker",
 				"github.vscode-github-actions",
 				"ms-toolsai.jupyter",
-				"mtxr.sqltools",
-				"mtxr.sqltools-driver-pg",
 				"ms-python.python"
 			]
 		}
