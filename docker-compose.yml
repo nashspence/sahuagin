@@ -21,6 +21,7 @@ services:
       - GRANT_SUDO=yes
       - TZ=America/Los_Angeles
       - CHOWN_HOME=yes
+      - JUPYTER_TOKEN=565b05d8e36db32dd714c96d6ef4b523c97107f9ceccc2c5
     volumes:
       - ./bind-mounts/jupyter/home:/home/jovyan
     depends_on:

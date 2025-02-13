@@ -28,6 +28,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/root/.local/bin:${PATH}"
+
 COPY poststart.sh /usr/local/bin/poststart.sh
 RUN chmod +x /usr/local/bin/poststart.sh
 
