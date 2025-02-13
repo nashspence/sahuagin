@@ -13,37 +13,38 @@ END;
 $$;
 
 --#endregion
---#region "add_discrete_span"
 
-CREATE OR REPLACE PROCEDURE add_discrete_span(
-    p_attribute_id INTEGER,
-    p_label VARCHAR(255)
+--#region "add_discrete_attribute"
+
+CREATE OR REPLACE PROCEDURE add_discrete_attribute(
+    in_name       VARCHAR(255),
+    OUT out_attr_id INTEGER
 )
 LANGUAGE plpgsql
 AS $$
-DECLARE
-    v_total_weight    DOUBLE PRECISION;
-    v_pinned_weight   DOUBLE PRECISION;
-    v_target          DOUBLE PRECISION;
-    v_count_old       INTEGER;
-    v_new_count       INTEGER;
-    candidate         DOUBLE PRECISION;
 BEGIN
-    -- Get the total weight for all discrete spans for this attribute.
-    SELECT COALESCE(SUM(weight), 0)
-      INTO v_total_weight
-      FROM span
-     WHERE attribute_id = p_attribute_id
-       AND type = 'discrete';
-       
-    -- If no spans exist, simply insert the first span with weight 1.
-    IF v_total_weight = 0 THEN
-        INSERT INTO span(attribute_id, label, type, is_percentage_pinned, weight)
-        VALUES (p_attribute_id, p_label, 'discrete', false, 1.0);
-        RETURN;
-    END IF;
-    
-    -- Compute the total weight of pinned spans.
+    INSERT INTO attribute (name, type)
+      VALUES (in_name, 'discrete')
+      RETURNING id INTO out_attr_id;
+END;
+$$;
+
+--#endregion
+--#region "add_disc_span_to_attr"
+
+CREATE OR REPLACE FUNCTION redistribute_unpinned_spans(
+    p_attribute_id INTEGER,
+    p_modified_span_id INTEGER,
+    p_new_weight DOUBLE PRECISION,
+    p_old_weight DOUBLE PRECISION
+) RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_pinned_weight DOUBLE PRECISION;
+    v_target         DOUBLE PRECISION;
+BEGIN
+    -- Compute the total weight of pinned discrete spans.
     SELECT COALESCE(SUM(weight), 0)
       INTO v_pinned_weight
       FROM span
@@ -51,9 +52,73 @@ BEGIN
        AND type = 'discrete'
        AND is_percentage_pinned = true;
        
-    -- The available weight for all non-pinned spans.
+    -- The available weight for all unpinned spans.
     v_target := 1.0 - v_pinned_weight;
     
+    -- If there’s only one unpinned span (v_target equals p_old_weight), then
+    -- the new weight must equal the entire target.
+    IF (v_target - p_old_weight) = 0 THEN
+       IF p_new_weight <> v_target THEN
+           RAISE EXCEPTION 'Cannot change weight; only one unpinned span exists and its weight must be %', v_target;
+       END IF;
+    END IF;
+    
+    -- Update all unpinned discrete spans:
+    -- • The modified span gets the new weight.
+    -- • All others are scaled proportionally.
+    UPDATE span
+       SET weight = CASE 
+                      WHEN id = p_modified_span_id THEN p_new_weight
+                      ELSE weight * ((v_target - p_new_weight) / (v_target - p_old_weight))
+                    END
+     WHERE attribute_id = p_attribute_id
+       AND type = 'discrete'
+       AND is_percentage_pinned = false;
+END;
+$$;
+
+
+CREATE OR REPLACE PROCEDURE add_disc_span_to_attr(
+    p_attribute_id INTEGER,
+    p_label VARCHAR(255),
+    OUT out_span_id INTEGER
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    new_span_id     INTEGER;
+    v_total_weight  DOUBLE PRECISION;
+    v_pinned_weight DOUBLE PRECISION;
+    v_target        DOUBLE PRECISION;
+    v_count_old     INTEGER;
+    candidate       DOUBLE PRECISION;
+BEGIN
+    -- Compute the total weight for all discrete spans for this attribute.
+    SELECT COALESCE(SUM(weight), 0)
+      INTO v_total_weight
+      FROM span
+     WHERE attribute_id = p_attribute_id
+       AND type = 'discrete';
+
+    -- If no spans exist, simply insert the first span with weight 1.
+    IF v_total_weight = 0 THEN
+        INSERT INTO span(attribute_id, label, type, is_percentage_pinned, weight)
+        VALUES (p_attribute_id, p_label, 'discrete', false, 1.0)
+        RETURNING id INTO new_span_id;
+        out_span_id := new_span_id;
+        RETURN;
+    END IF;
+    
+    -- Compute the total weight of pinned discrete spans.
+    SELECT COALESCE(SUM(weight), 0)
+      INTO v_pinned_weight
+      FROM span
+     WHERE attribute_id = p_attribute_id
+       AND type = 'discrete'
+       AND is_percentage_pinned = true;
+    
+    -- Calculate the available target weight for all unpinned spans.
+    v_target := 1.0 - v_pinned_weight;
     IF v_target <= 0 THEN
         RAISE EXCEPTION 'No available weight for unpinned spans (v_target = %)', v_target;
     END IF;
@@ -65,93 +130,100 @@ BEGIN
      WHERE attribute_id = p_attribute_id
        AND type = 'discrete'
        AND is_percentage_pinned = false;
-       
+    
     -- Insert the new unpinned span with a temporary weight of 0.
     INSERT INTO span(attribute_id, label, type, is_percentage_pinned, weight)
-    VALUES (p_attribute_id, p_label, 'discrete', false, 0.0);
+    VALUES (p_attribute_id, p_label, 'discrete', false, 0.0)
+    RETURNING id INTO new_span_id;
+
+    out_span_id := new_span_id;
     
-    v_new_count := v_count_old + 1;
-    candidate := v_target / v_new_count;
+    -- Compute the candidate weight for the new span.
+    candidate := v_target / (v_count_old + 1);
     
-    -- Recalculate every unpinned span’s weight:
-    -- • The newly inserted span (identified by its label) is given the candidate weight.
-    -- • Each pre-existing unpinned span is scaled proportionally so that its new weight is:
-    --       old_weight * ((v_target - candidate) / v_target)
-    UPDATE span
-       SET weight = CASE 
-                      WHEN label = p_label THEN candidate
-                      ELSE weight * ((v_target - candidate) / v_target)
-                    END
-     WHERE attribute_id = p_attribute_id
-       AND type = 'discrete'
-       AND is_percentage_pinned = false;
+    -- Redistribute the weights among all unpinned spans
+    PERFORM redistribute_unpinned_spans(p_attribute_id, new_span_id, candidate, 0);
 END;
 $$;
 
---#endregion
---#region "add_discrete_attr"
 
-CREATE OR REPLACE PROCEDURE add_discrete_attr(
-    in_name       VARCHAR(255),
-    in_spans      JSON,  -- JSON array: either [["span1", 10], ["span2", 20]] or ["span1", "span2"]
-    OUT out_attr_id INTEGER
+CREATE OR REPLACE PROCEDURE modify_disc_span_weight(
+    p_span_id    INTEGER,
+    p_new_weight DOUBLE PRECISION
 )
 LANGUAGE plpgsql
 AS $$
 DECLARE
-    new_attr_id   INTEGER;
-    i             INTEGER := 0;
-    span_count    INTEGER;
-    span_label    VARCHAR(255);
-    span_weight   INTEGER;
-    first_elem_type TEXT;
-    spans_json    JSON;
+    v_attribute_id INTEGER;
+    v_current_weight DOUBLE PRECISION;
+    v_is_pinned    BOOLEAN;
+    v_type         TEXT;
+    v_pinned_weight DOUBLE PRECISION;
+    v_target        DOUBLE PRECISION;
+    v_other_sum     DOUBLE PRECISION;
 BEGIN
-    INSERT INTO attribute (name, type)
-      VALUES (in_name, 'discrete')
-      RETURNING id INTO new_attr_id;
-
-    IF in_spans IS NOT NULL THEN
-        spans_json := in_spans::json;
-        span_count := json_array_length(spans_json);
-
-        IF span_count > 0 THEN
-            first_elem_type := json_typeof(spans_json->0);
-        ELSE
-            first_elem_type := '';
-        END IF;
-
-        WHILE i < span_count LOOP
-            IF first_elem_type = 'array' THEN
-                span_label := (spans_json->i)->>0;
-                span_weight := ((spans_json->i)->>1)::INTEGER;
-                INSERT INTO span (attribute_id, label, type, is_percentage_pinned, weight)
-                  VALUES (new_attr_id, span_label, 'discrete', false, span_weight);
-            ELSE
-                span_label := spans_json->>i;
-                CALL add_discrete_span(new_attr_id, span_label);
-            END IF;
-            i := i + 1;
-        END LOOP;
+    -- Get the current span's details.
+    SELECT attribute_id, weight, is_percentage_pinned, type
+      INTO v_attribute_id, v_current_weight, v_is_pinned, v_type
+      FROM span
+     WHERE id = p_span_id;
+     
+    -- Ensure the span exists, is of type 'discrete' and is not pinned.
+    IF NOT FOUND OR v_type <> 'discrete' OR v_is_pinned THEN
+       RAISE EXCEPTION 'Span % not found or not a modifiable discrete span', p_span_id;
     END IF;
-
-    out_attr_id := new_attr_id;
+    
+    -- Compute the total pinned weight for this attribute.
+    SELECT COALESCE(SUM(weight), 0)
+      INTO v_pinned_weight
+      FROM span
+     WHERE attribute_id = v_attribute_id
+       AND type = 'discrete'
+       AND is_percentage_pinned = true;
+       
+    v_target := 1.0 - v_pinned_weight;
+    
+    -- Validate the new weight is between 0 and the available target.
+    IF p_new_weight < 0 OR p_new_weight > v_target THEN
+       RAISE EXCEPTION 'Invalid new weight: % (must be between 0 and %)', p_new_weight, v_target;
+    END IF;
+    
+    -- Compute the total weight for all other unpinned spans.
+    SELECT COALESCE(SUM(weight), 0)
+      INTO v_other_sum
+      FROM span
+     WHERE attribute_id = v_attribute_id
+       AND type = 'discrete'
+       AND is_percentage_pinned = false
+       AND id <> p_span_id;
+       
+    IF v_other_sum = 0 THEN
+       -- There is only one unpinned span. Its weight must equal the available target.
+       IF p_new_weight <> v_target THEN
+         RAISE EXCEPTION 'Only one unpinned span exists. Its weight must be %', v_target;
+       ELSE
+         UPDATE span SET weight = p_new_weight WHERE id = p_span_id;
+       END IF;
+    ELSE
+       -- Use the helper function to redistribute weights.
+       PERFORM redistribute_unpinned_spans(v_attribute_id, p_span_id, p_new_weight, v_current_weight);
+    END IF;
 END;
 $$;
 
 --#endregion
---#region "add_continuous_attr"
+--#region "add_continuous_attribute"
 
-CREATE OR REPLACE PROCEDURE add_continuous_attr(
+CREATE OR REPLACE PROCEDURE add_continuous_attribute(
     p_name           VARCHAR(255),
-    p_decimals       INTEGER,
-    p_has_labels     BOOLEAN,
-    p_has_value      BOOLEAN,
     p_min_value      DOUBLE PRECISION,
     p_mode_value     DOUBLE PRECISION,
     p_max_value      DOUBLE PRECISION,
     p_concentration  DOUBLE PRECISION,
     p_skew           DOUBLE PRECISION,
+    p_decimals       INTEGER,
+    p_has_labels     BOOLEAN,
+    p_has_value      BOOLEAN,
     p_units          VARCHAR(255),
     OUT p_attr_id    INTEGER
 )
@@ -169,13 +241,110 @@ END;
 $$;
 
 --#endregion
---#region "add_variant_attribute"
+--#region "add_cont_span_to_attr"
 
-CREATE OR REPLACE PROCEDURE add_variant_attribute(
+CREATE OR REPLACE PROCEDURE add_cont_span_to_attr(
+    p_attribute_id integer,
+    p_label varchar(255),
+    p_new_min double precision,
+    p_new_max double precision,
+    OUT out_span_id INTEGER
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_attr_min double precision;
+    v_attr_max double precision;
+    v_count integer;
+    v_first_id integer;
+    v_first_min double precision;
+    v_first_max double precision;
+    v_last_id integer;
+    v_last_min double precision;
+    v_last_max double precision;
+BEGIN
+    -- Get attribute’s overall range (continuous only)
+    SELECT min_value, max_value
+      INTO v_attr_min, v_attr_max
+      FROM attribute
+     WHERE id = p_attribute_id
+       AND type = 'continuous'
+     LIMIT 1;
+     
+    IF v_attr_min IS NULL THEN
+        RAISE EXCEPTION 'Attribute not found or not continuous';
+    END IF;
+    
+    -- Validate requested span
+    IF p_new_min < v_attr_min OR p_new_max > v_attr_max OR p_new_min >= p_new_max THEN
+        RAISE EXCEPTION 'Invalid span range';
+    END IF;
+    
+    -- If no continuous spans exist, insert one covering the full range
+    SELECT COUNT(*) INTO v_count
+      FROM span
+     WHERE attribute_id = p_attribute_id
+       AND type = 'continuous';
+       
+    IF v_count = 0 THEN
+        INSERT INTO span(attribute_id, label, type, min_value, max_value)
+        VALUES(p_attribute_id, p_label, 'continuous', v_attr_min, v_attr_max)
+        RETURNING id INTO out_span_id;
+        RETURN;
+    END IF;
+    
+    -- Adjust overlapping spans: first overlapping span (ordered by min_value)
+    SELECT id, min_value, max_value
+      INTO v_first_id, v_first_min, v_first_max
+      FROM span
+     WHERE attribute_id = p_attribute_id
+       AND type = 'continuous'
+       AND max_value > p_new_min
+       AND min_value < p_new_max
+     ORDER BY min_value ASC
+     LIMIT 1;
+     
+    IF v_first_min < p_new_min THEN
+        UPDATE span SET max_value = p_new_min WHERE id = v_first_id;
+    END IF;
+    
+    -- Adjust overlapping spans: last overlapping span (ordered by max_value)
+    SELECT id, min_value, max_value
+      INTO v_last_id, v_last_min, v_last_max
+      FROM span
+     WHERE attribute_id = p_attribute_id
+       AND type = 'continuous'
+       AND max_value > p_new_min
+       AND min_value < p_new_max
+     ORDER BY max_value DESC
+     LIMIT 1;
+     
+    IF v_last_max > p_new_max THEN
+        UPDATE span SET min_value = p_new_max WHERE id = v_last_id;
+    END IF;
+    
+    -- Remove spans fully covered by the new span
+    DELETE FROM span
+     WHERE attribute_id = p_attribute_id
+       AND type = 'continuous'
+       AND min_value >= p_new_min
+       AND max_value <= p_new_max;
+       
+    INSERT INTO span(attribute_id, label, type, min_value, max_value)
+    VALUES(p_attribute_id, p_label, 'continuous', p_new_min, p_new_max)
+    RETURNING id INTO out_span_id;;
+END;
+$$;
+
+--#endregion
+--#region "link_attr_to_variant"
+
+CREATE OR REPLACE PROCEDURE link_attr_to_variant(
     p_variant_id   INTEGER,
     p_attribute_id INTEGER,
     p_name         VARCHAR,
-    p_position     INTEGER
+    p_position     INTEGER,
+    OUT out_varattr_id INTEGER
 )
 LANGUAGE plpgsql
 AS $$
@@ -204,7 +373,8 @@ BEGIN
     END IF;
 
     INSERT INTO variant_attribute(attribute_id, name, causation_index, variant_id)
-    VALUES (p_attribute_id, p_name, v_position, p_variant_id);
+    VALUES (p_attribute_id, p_name, v_position, p_variant_id)
+    RETURNING id INTO out_varattr_id;
 END;
 $$;
 
@@ -213,37 +383,14 @@ $$;
 
 CREATE OR REPLACE PROCEDURE add_variant(
     in_variant_name VARCHAR,
-    in_attr_keys    JSON,
     OUT out_variant_id INTEGER
 )
 LANGUAGE plpgsql
 AS $$
-DECLARE
-    new_variant_id INTEGER;
-    i INTEGER := 0;
-    key_count INTEGER;
-    attr_key INTEGER;
-    attr_name VARCHAR;
 BEGIN
     INSERT INTO variant (name)
     VALUES (in_variant_name)
-    RETURNING id INTO new_variant_id;
-    out_variant_id := new_variant_id;
-
-    IF in_attr_keys IS NOT NULL THEN
-        key_count := json_array_length(in_attr_keys::json);
-        WHILE i < key_count LOOP
-            -- Get the JSON array element at position i and cast to integer.
-            attr_key := (in_attr_keys::json ->> i)::integer;
-            SELECT name
-              INTO attr_name
-              FROM attribute
-             WHERE id = attr_key
-             LIMIT 1;
-            CALL add_variant_attribute(new_variant_id, attr_key, attr_name, NULL);
-            i := i + 1;
-        END LOOP;
-    END IF;
+    RETURNING id INTO out_variant_id;
 END;
 $$;
 
@@ -1035,7 +1182,7 @@ $$;
 --#endregion
 --#region "generate_entity_group"
 
-CREATE OR REPLACE PROCEDURE generate_entities_in_group(
+CREATE OR REPLACE PROCEDURE generate_entity_group(
     p_variant_id           INTEGER,
     p_group_name           VARCHAR,
     p_entity_name_template VARCHAR,
@@ -1118,6 +1265,173 @@ AS $$
     JOIN entity_group_link egl ON e.id = egl.entity_id
     WHERE egl.entity_group_id = p_entity_group_id
   ) e;
+$$;
+
+--#endregion
+
+--#region "set_variant_attr_span"
+
+CREATE OR REPLACE PROCEDURE set_variant_attr_span(
+    p_variant_id INT,
+    p_variant_attribute_id INT,
+    p_span_id INT,
+    OUT new_variant_attr_span_id INT
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  INSERT INTO variant_attr_span(variant_id, variant_attribute_id, span_id)
+  VALUES (p_variant_id, p_variant_attribute_id, p_span_id)
+  RETURNING id INTO new_variant_attr_span_id;
+END;
+$$;
+
+--#endregion
+--#region "add_variation"
+
+CREATE OR REPLACE PROCEDURE add_variation(
+    p_activating_span_id INT,
+    p_activating_variant_attr_span_id INT,
+    p_activating_variant_attribute_id INT,
+    p_to_modify_variant_attr_span_id INT,
+    p_to_modify_variant_attribute_id INT,
+    OUT new_variation_id INT
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_to_modify_vavspan_attr_id INT;
+    v_activating_vavspan_attr_id INT;
+BEGIN
+    -- Try to get an existing vavspan_attr row for the "to modify" attribute.
+    SELECT id INTO v_to_modify_vavspan_attr_id
+      FROM vavspan_attr
+     WHERE variant_attribute_id = p_to_modify_variant_attribute_id
+       AND variant_attr_span_id = p_to_modify_variant_attr_span_id
+     LIMIT 1;
+
+    -- If none exists, insert one.
+    IF v_to_modify_vavspan_attr_id IS NULL THEN
+        INSERT INTO vavspan_attr (variant_attribute_id, variant_attr_span_id)
+        VALUES (p_to_modify_variant_attribute_id, p_to_modify_variant_attr_span_id)
+        RETURNING id INTO v_to_modify_vavspan_attr_id;
+    END IF;
+
+    -- Try to get an existing vavspan_attr row for the "activating" attribute.
+    SELECT id INTO v_activating_vavspan_attr_id
+      FROM vavspan_attr
+     WHERE variant_attribute_id = p_activating_variant_attribute_id
+       AND variant_attr_span_id = p_activating_variant_attr_span_id
+     LIMIT 1;
+
+    -- If none exists, insert one.
+    IF v_activating_vavspan_attr_id IS NULL THEN
+        INSERT INTO vavspan_attr (variant_attribute_id, variant_attr_span_id)
+        VALUES (p_activating_variant_attribute_id, p_activating_variant_attr_span_id)
+        RETURNING id INTO v_activating_vavspan_attr_id;
+    END IF;
+
+    -- Insert the new variation using the determined vavspan_attr IDs.
+    INSERT INTO variation(
+        activating_span_id, 
+        to_modify_vavspan_attr_id, 
+        activating_vavspan_attr_id
+    )
+    VALUES (
+        p_activating_span_id, 
+        v_to_modify_vavspan_attr_id, 
+        v_activating_vavspan_attr_id
+    )
+    RETURNING id INTO new_variation_id;
+END;
+$$;
+
+--#endregion
+--#region "set_continuous_variation_span"
+
+CREATE OR REPLACE PROCEDURE set_continuous_variation_span(
+    p_variation_id INT,
+    p_delta_mode DOUBLE PRECISION,
+    p_delta_conc DOUBLE PRECISION,
+    p_delta_skew DOUBLE PRECISION,
+    OUT new_variation_cont_attr_id INT
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  INSERT INTO variation_continuous_attr(variation_id, delta_mode, delta_conc, delta_skew)
+  VALUES (p_variation_id, p_delta_mode, p_delta_conc, p_delta_skew)
+  RETURNING id INTO new_variation_cont_attr_id;
+END;
+$$;
+
+--#endregion
+--#region "set_span_activating_span"
+
+CREATE OR REPLACE PROCEDURE set_span_activating_span(
+    p_variation_id INT,
+    p_span_id INT,
+    OUT new_variation_activated_span_id INT
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  INSERT INTO variation_activated_span(variation_id, span_id)
+  VALUES (p_variation_id, p_span_id)
+  RETURNING id INTO new_variation_activated_span_id;
+END;
+$$;
+
+--#endregion
+--#region "set_delta_weight_span"
+
+CREATE OR REPLACE PROCEDURE set_delta_weight_span(
+    p_variation_id INT,
+    p_span_id INT,
+    p_delta_weight DOUBLE PRECISION,
+    OUT new_variation_delta_weight_id INT
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  INSERT INTO variation_delta_weight(variation_id, span_id, delta_weight)
+  VALUES (p_variation_id, p_span_id, p_delta_weight)
+  RETURNING id INTO new_variation_delta_weight_id;
+END;
+$$;
+
+--#endregion
+--#region "set_span_disabling_span"
+
+CREATE OR REPLACE PROCEDURE set_span_disabling_span(
+    p_variation_id INT,
+    p_span_id INT,
+    OUT new_variation_inactive_span_id INT
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  INSERT INTO variation_inactive_span(variation_id, span_id)
+  VALUES (p_variation_id, p_span_id)
+  RETURNING id INTO new_variation_inactive_span_id;
+END;
+$$;
+
+--#endregion
+--#region "link_vavspan_attr"
+
+CREATE OR REPLACE PROCEDURE link_vavspan_attr(
+    p_variant_attribute_id INT,
+    p_variant_attr_span_id INT,
+    OUT new_vavspan_id INT
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  INSERT INTO vavspan_attr(variant_attribute_id, variant_attr_span_id)
+  VALUES (p_variant_attribute_id, p_variant_attr_span_id)
+  RETURNING id INTO new_vavspan_id;
+END;
 $$;
 
 --#endregion

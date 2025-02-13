@@ -2,3 +2,4 @@ docker-compose.override*.yml
 docker-data
 /target
 /bind-mounts/postgres
+/bind-mounts/jupyter

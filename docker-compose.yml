@@ -11,3 +11,20 @@ services:
     restart: unless-stopped
     volumes:
       - ./bind-mounts/postgres:/var/lib/postgresql/data
+  jupyter:
+    container_name: jupyter
+    image: quay.io/jupyter/datascience-notebook:latest
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    environment:
+      - GRANT_SUDO=yes
+      - TZ=America/Los_Angeles
+      - CHOWN_HOME=yes
+    volumes:
+      - ./bind-mounts/jupyter/home:/home/jovyan
+    depends_on:
+      - postgres
+    stdin_open: true
+    tty: true
+    user: root

@@ -5,5 +5,3 @@ if [ -d /tmp/.ssh ]; then
   chmod 700 /root/.ssh
   chmod 600 /root/.ssh/*
 fi
-rustup component add rust-src rust-analyzer
-/root/.cargo/bin/cargo build

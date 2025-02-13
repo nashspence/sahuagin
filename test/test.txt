@@ -1,0 +1,6 @@
+!mamba install -c conda-forge nodejs jupyterlab-lsp python-lsp-server jupysql psycopg2 -y
+!npm install -g sql-language-server
+!sql-language-server --version
+!sql-language-server up
+%load_ext sql
+%sql postgresql://root:test@localhost:5432/sahuagin

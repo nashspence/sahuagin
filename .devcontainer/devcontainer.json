@@ -8,15 +8,7 @@
 		"vscode": {
 			"extensions": [
 				"ms-azuretools.vscode-docker",
-				"github.vscode-github-actions",
-				"donjayamanne.githistory",
-				"rust-lang.rust-analyzer",
-				"fill-labs.dependi",
-				"dustypomerleau.rust-syntax",
-				"jinxdash.prettier-rust",
-				"vadimcn.vscode-lldb",
-				"ms-vscode.wasm-dwarf-debugging",
-				"cweijan.vscode-mysql-client2"
+				"github.vscode-github-actions"
 			]
 		}
 	}
