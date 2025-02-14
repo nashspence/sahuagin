@@ -3,3 +3,7 @@ docker-data
 /target
 /bind-mounts/postgres
 /bind-mounts/jupyter
+/src/mylocal_db
+/src/postgres*
+*-checkpoint*
+.DS_Store
