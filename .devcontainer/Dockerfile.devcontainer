@@ -1,33 +1,11 @@
-FROM cruizba/ubuntu-dind:latest
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install basic utilities
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    git \
-    gpg \
-    apt-transport-https \
-    sed \
-    coreutils \
-    sudo \
-    openssh-client
-
-RUN apt-get update && \
-    apt-get install -y software-properties-common && \
-    add-apt-repository "deb http://archive.ubuntu.com/ubuntu/ focal main universe" && \
-    apt-get update
-
-# Install PostgreSQL CLI (psql) using the official repository
-RUN apt-get update && \
-    apt-get install -y wget gnupg2 && \
-    wget -qO - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - && \
-    echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | tee /etc/apt/sources.list.d/pgdg.list && \
-    apt-get update && \
-    apt-get install -y postgresql-client && \
-    rm -rf /var/lib/apt/lists/*
-
-ENV PATH="/root/.local/bin:${PATH}"
+    curl git gpg apt-transport-https sed coreutils sudo openssh-client \
+    postgresql postgresql-contrib pgcli \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY poststart.sh /usr/local/bin/poststart.sh
 RUN chmod +x /usr/local/bin/poststart.sh
