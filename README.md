@@ -21,3 +21,18 @@ sudo -u postgres pgcli sahuagin
 ## Schema
 
 All tables, functions, and procedures are organized in separate files under `sql/`. The original Jupyter notebooks are kept in `notebooks/` for historical reference.
+
+## Example usage
+
+After loading `sql/00_init.sql`, the script `sql/examples/test_generation.sql`
+creates two minimal mechanisms, generates states and a grouping, and runs both
+initial generation and regeneration of states.
+
+Run it with:
+
+```bash
+sudo -u postgres psql -d sahuagin -f sql/examples/test_generation.sql
+```
+
+This demonstrates the stored procedures `create_mechanism`, `generate_state`
+and `generate_grouping` in action.

@@ -4,17 +4,17 @@ LANGUAGE plpgsql
 STABLE
 AS $$
 DECLARE
-    full_path text;
+    result_path text;
 BEGIN
     WITH RECURSIVE act_path AS (
         -- Start with the given activation.
-        SELECT 
+        SELECT
             id,
             name,
             from_mechanism,
             root_mechanism,
             to_mechanism,
-            name AS full_path
+            name::text AS full_path
         FROM activation
         WHERE id = activation_id
 
@@ -36,7 +36,7 @@ BEGIN
     )
     -- The root activation in the chain will have no parent – i.e. no activation
     -- exists such that its to_mechanism equals this activation's from_mechanism.
-    SELECT full_path INTO full_path
+    SELECT full_path INTO result_path
     FROM act_path
     WHERE NOT EXISTS (
         SELECT 1 
@@ -46,7 +46,7 @@ BEGIN
     )
     LIMIT 1;
     
-    RETURN full_path;
+    RETURN result_path;
 END;
 $$;
 
