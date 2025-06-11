@@ -1,16 +1,22 @@
 # Sahuagin Database
 
-This repository contains the PostgreSQL schema and stored procedures for the Sahuagin project. The SQL files live under `sql/` and are loaded automatically when the database container starts. The entry point `00_init.sql` includes the individual definitions from the `schema`, `functions`, and `procedures` folders.
+This repository contains the PostgreSQL schema and stored procedures for the Sahuagin project. The SQL files live under `sql/` and can be loaded into any PostgreSQL server. The entry point `00_init.sql` includes the individual definitions from the `schema`, `functions`, and `procedures` folders.
 
 ## Starting the database
 
-A minimal Docker Compose setup runs PostgreSQL and loads the schema:
+Install PostgreSQL and `pgcli` on your system. The database can then be created
+and loaded with:
 
 ```bash
-docker-compose up -d
+sudo -u postgres createdb sahuagin
+sudo -u postgres psql -d sahuagin -f sql/00_init.sql
 ```
 
-PostgreSQL will be available on port `5432` with the default credentials `postgres`/`postgres`.
+To explore the schema using `pgcli`:
+
+```bash
+sudo -u postgres pgcli sahuagin
+```
 
 ## Schema
 

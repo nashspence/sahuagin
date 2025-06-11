@@ -1,17 +1,17 @@
 {
-	"name": "sahuagin",
-	"dockerComposeFile": "./docker-compose.yml",
-	"service": "devcontainer",
-	"postStartCommand": "poststart.sh",
-	"workspaceFolder": "/workspace",
-	"customizations": {
-		"vscode": {
-			"extensions": [
-				"ms-azuretools.vscode-docker",
-				"github.vscode-github-actions",
-				"ms-toolsai.jupyter",
-				"ms-python.python"
-			]
-		}
-	}
+       "name": "sahuagin",
+       "build": {
+               "dockerfile": "Dockerfile.devcontainer"
+       },
+       "postStartCommand": "poststart.sh",
+       "workspaceFolder": "/workspace",
+       "customizations": {
+                "vscode": {
+                        "extensions": [
+                                "github.vscode-github-actions",
+                                "ms-toolsai.jupyter",
+                                "ms-python.python"
+                        ]
+                }
+       }
 }
