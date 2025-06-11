@@ -1,19 +1,17 @@
 # Sahuagin Database
 
-This repository centers around the Jupyter notebook `Create the Sahuagin Database.ipynb`. The notebook contains the latest schema and logic for building a generative attribute database in PostgreSQL.
+This repository contains the PostgreSQL schema and stored procedures for the Sahuagin project. The definitions are located in `sql/schema.sql` and are loaded automatically when the database container starts.
 
-## Starting the development environment
+## Starting the database
 
-A small Docker Compose configuration starts Jupyter and PostgreSQL together:
+A minimal Docker Compose setup runs PostgreSQL and loads the schema:
 
 ```bash
 docker-compose up -d
 ```
 
-Jupyter will be available on port `8888` and PostgreSQL on `5432`. The access token for Jupyter is written to `server.txt` and also set via the `JUPYTER_TOKEN` variable in `docker-compose.yml`.
+PostgreSQL will be available on port `5432` with the default credentials `postgres`/`postgres`.
 
-## Using the notebook
+## Schema
 
-Open the `Create the Sahuagin Database.ipynb` notebook from the Jupyter interface and run the cells. The notebook installs PostgreSQL locally inside the container, creates the database and loads all required procedures.
-
-The previous notebooks remain under `notebooks/` for reference.
+All tables, functions, and procedures are defined in `sql/schema.sql`. The original Jupyter notebooks are kept in `notebooks/` for historical reference.
