@@ -1,18 +1,13 @@
+version: '3.8'
 services:
-  jupyter:
-    container_name: jupyter
-    image: quay.io/jupyter/datascience-notebook:latest
+  postgres:
+    image: postgres:16
     restart: unless-stopped
-    ports:
-      - "8888:8888"
-      - "5432:5432"
     environment:
-      - GRANT_SUDO=yes
-      - TZ=America/Los_Angeles
-      - CHOWN_HOME=yes
-      - JUPYTER_TOKEN=565b05d8e36db32dd714c96d6ef4b523c97107f9ceccc2c5
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: sahuagin
+    ports:
+      - "5432:5432"
     volumes:
-      - ./bind-mounts/jupyter/home:/home/jovyan
-    stdin_open: true
-    tty: true
-    user: root
+      - ./sql:/docker-entrypoint-initdb.d
