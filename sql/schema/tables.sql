@@ -2,7 +2,7 @@ DROP TABLE IF EXISTS mechanism CASCADE;
 CREATE TABLE mechanism (
   id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   name citext NOT NULL UNIQUE,
-  serialized text NOT NULL
+  module text NOT NULL
 );
 
 -- Activation table now links mechanisms.

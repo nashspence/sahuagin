@@ -4,6 +4,7 @@
 \ir functions/debug_log.sql
 \ir functions/get_activation_full_path.sql
 \ir functions/check_unmasking.sql
+\ir functions/validate_state.sql
 \ir procedures/create_mechanism.sql
 \ir procedures/create_unmasking.sql
 \ir procedures/lock_value.sql
