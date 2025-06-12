@@ -29,7 +29,7 @@ def run_activation(context):
       - activation_path: full (slash–separated) activation path so far,
       - is_regeneration: boolean flag.
     
-    Returns the generator produced by executing the mechanism's main() code.
+    Returns the generator produced by executing the mechanism's generate() code.
     """
     current_activation_path = context.get('activation_path', "")
 
@@ -84,7 +84,7 @@ def run_activation(context):
             context['mech_id'] = res_unmask[0]['unmasked']
 
     # --- Look up the mechanism record.
-    sql = "SELECT id, name, serialized FROM mechanism WHERE id = $1"
+    sql = "SELECT id, name, module FROM mechanism WHERE id = $1"
     res = exec_query(sql, [context['mech_id']], ["integer"])
     if res.nrows() == 0:
         plpy.error("Mechanism with id %s not found" % context['mech_id'])
@@ -277,10 +277,10 @@ def run_activation(context):
         'activate': activate,
         'reject': reject,
     }
-    exec(mech['serialized'], local_ns)
-    if 'main' not in local_ns:
-        plpy.error("Mechanism code does not define a main() generator")
-    return local_ns['main']()
+    exec(mech['module'], local_ns)
+    if 'generate' not in local_ns:
+        plpy.error("Mechanism code does not define a generate() generator")
+    return local_ns['generate']()
 
 def trampoline(root_context):
     """
