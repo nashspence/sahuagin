@@ -35,30 +35,41 @@ BEGIN
         RAISE EXCEPTION 'Value "%" not found in state with activation path %', p_value_name, p_activation_path;
     END IF;
 
-    -- Compute full dependency closure for the target value.
+    -- Compute full dependency closure for the target value and populate locks.
     WITH RECURSIVE lock_chain(act) AS (
-       -- Start with the activation that produced the target value.
-       SELECT v.activation
-       FROM value v
-       WHERE v.state = v_state_id
-         AND v.id = v_value_id
-       UNION
-       -- Walk upward: any activation that produced an input used by an activation in the chain.
-       SELECT va.antecedent
-       FROM value_antecedent va
-       JOIN lock_chain lc ON va.child = lc.act
-       UNION
-       -- Walk downward: any activation that used an output from an activation in the chain.
-       SELECT va.child
-       FROM value_antecedent va
-       JOIN lock_chain lc ON va.antecedent = lc.act
+        -- Start with the activation that produced the target value.
+        SELECT v.activation
+        FROM value v
+        WHERE v.state = v_state_id
+          AND v.id = v_value_id
+        UNION
+        -- Walk both upward and downward through value_antecedent.
+        SELECT rel.act
+        FROM (
+            SELECT child AS child, antecedent AS act FROM value_antecedent
+            UNION
+            SELECT antecedent AS child, child AS act FROM value_antecedent
+        ) rel
+        JOIN lock_chain lc ON rel.child = lc.act
     )
-    -- Record for each activation in the dependency closure that it is locked by this value.
     INSERT INTO locked_dependency(state, value, activation)
     SELECT v_state_id, v_value_id, act FROM lock_chain
     ON CONFLICT DO NOTHING;
 
-    -- Ensure each activation in the closure is in locked_activation.
+    WITH RECURSIVE lock_chain(act) AS (
+        SELECT v.activation
+        FROM value v
+        WHERE v.state = v_state_id
+          AND v.id = v_value_id
+        UNION
+        SELECT rel.act
+        FROM (
+            SELECT child AS child, antecedent AS act FROM value_antecedent
+            UNION
+            SELECT antecedent AS child, child AS act FROM value_antecedent
+        ) rel
+        JOIN lock_chain lc ON rel.child = lc.act
+    )
     INSERT INTO locked_activation(state, activation)
     SELECT v_state_id, act FROM lock_chain
     ON CONFLICT DO NOTHING;
