@@ -73,6 +73,7 @@ CREATE TABLE locked_activation (
     REFERENCES state(id) ON DELETE CASCADE,
   CONSTRAINT fk_locked_activation_activation FOREIGN KEY (activation)
     REFERENCES activation(id) ON DELETE CASCADE
+  ,UNIQUE (state, activation)
 );
 
 -- Enum indicating the type of value stored.
