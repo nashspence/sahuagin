@@ -120,7 +120,7 @@ def run_activation(context):
         sql_val = """
             SELECT v.id AS value_id, v.activation AS antecedent,
                 CASE WHEN v.type = 'number'
-                        THEN (SELECT serialized FROM number_value WHERE value = v.id)
+                        THEN (SELECT serialized::text FROM number_value WHERE value = v.id)
                         ELSE (SELECT serialized FROM string_value WHERE value = v.id)
                 END AS value
             FROM value v
@@ -190,37 +190,42 @@ def run_activation(context):
             local_activation_name = mechanism_name
         new_activation_path = current_activation_path + "/" + local_activation_name if current_activation_path else local_activation_name
         # Check for duplicate activation on–demand.
-        sql_check = "SELECT 1 FROM activation WHERE get_activation_full_path(id) = $1 LIMIT 1"
+        sql_check = "SELECT id, to_mechanism FROM activation WHERE get_activation_full_path(id) = $1 LIMIT 1"
         res_check = exec_query(
             sql_check,
             [new_activation_path],
             ["text"],
         )
         if res_check.nrows() > 0:
-            plpy.error("Activation with name '%s' already exists in the current activation" % local_activation_name)
-        # Look up the mechanism id for the requested mechanism.
-        sql_lookup = "SELECT id FROM mechanism WHERE name = $1 LIMIT 1"
-        res_lookup = exec_query(
-            sql_lookup,
-            [mechanism_name],
-            ["citext"],
-        )
-        if res_lookup.nrows() == 0:
-            plpy.error("Mechanism with name %s not found" % mechanism_name)
-        new_mech_id = res_lookup[0]['id']
+            if context.get('is_regeneration'):
+                new_activation_id = res_check[0]['id']
+                new_mech_id = res_check[0]['to_mechanism']
+            else:
+                plpy.error("Activation with name '%s' already exists in the current activation" % local_activation_name)
+        else:
+            # Look up the mechanism id for the requested mechanism.
+            sql_lookup = "SELECT id FROM mechanism WHERE name = $1 LIMIT 1"
+            res_lookup = exec_query(
+                sql_lookup,
+                [mechanism_name],
+                ["citext"],
+            )
+            if res_lookup.nrows() == 0:
+                plpy.error("Mechanism with name %s not found" % mechanism_name)
+            new_mech_id = res_lookup[0]['id']
 
-        # Insert a new activation record.
-        sql_act = """
-            INSERT INTO activation(name, from_mechanism, root_mechanism, to_mechanism)
-            VALUES ($1, $2, $3, $4)
-            RETURNING id
-        """
-        res_act = exec_query(
-            sql_act,
-            [local_activation_name, context['mech_id'], context['root_mech_id'], new_mech_id],
-            ["citext", "integer", "integer", "integer"],
-        )
-        new_activation_id = res_act[0]['id']
+            # Insert a new activation record.
+            sql_act = """
+                INSERT INTO activation(name, from_mechanism, root_mechanism, to_mechanism)
+                VALUES ($1, $2, $3, $4)
+                RETURNING id
+            """
+            res_act = exec_query(
+                sql_act,
+                [local_activation_name, context['mech_id'], context['root_mech_id'], new_mech_id],
+                ["citext", "integer", "integer", "integer"],
+            )
+            new_activation_id = res_act[0]['id']
         # Prepare the child context.
         child_context = {
             'mech_id': new_mech_id,
