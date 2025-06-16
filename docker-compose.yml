@@ -1,0 +1,10 @@
+version: '3.9'
+services:
+  test:
+    build: .
+    volumes:
+      - .:/workspace
+    environment:
+      DB_NAME: sahuagin_test
+    command: pytest -v
+
