@@ -43,10 +43,18 @@ The example also defines a `combo_mech` that composes `number_mech` and `string_
 
 ## Development
 
-Tests require PostgreSQL to be installed locally and can be run with:
+Tests require PostgreSQL. You can either install it locally or use the provided
+Docker setup. To run tests directly on your machine:
 
 ```bash
 pytest
+```
+
+Alternatively, build the container and execute the tests via
+`docker-compose`:
+
+```bash
+docker compose run --rm test
 ```
 
 ## License
